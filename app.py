@@ -109,12 +109,21 @@ def read_public_sheet(url):
     sheet_id = extract_sheet_id(url)
     if not sheet_id:
         return None, "Invalid Google Sheets URL."
-    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+
+    # Check for gid (tab) in URL
+    gid_match = re.search(r'[#&?]gid=(\d+)', url)
+    gid_param = f"&gid={gid_match.group(1)}" if gid_match else ""
+
+    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_param}"
     try:
-        df = pd.read_csv(csv_url).dropna(how="all")
+        df = pd.read_csv(csv_url, header=0)
+        # Drop rows where ALL cells are empty, but keep rows with at least one value
+        df = df.dropna(how="all")
+        # Strip column names of extra whitespace
+        df.columns = [str(c).strip() for c in df.columns]
         return df, None
-    except Exception:
-        return None, "Could not read sheet. Make sure sharing is 'Anyone with the link can view'."
+    except Exception as e:
+        return None, f"Could not read sheet. Make sure sharing is set to 'Anyone with the link can view'. ({e})"
 
 def parse_headlines(raw: str) -> list:
     """Split headlines that are in the same cell separated by newlines or semicolons."""
@@ -126,8 +135,27 @@ def parse_headlines(raw: str) -> list:
     return [l.strip() for l in lines if l.strip()]
 
 def get_canva_preview(url):
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+    headers = {"User-Agent": ua}
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}
+        # Try Canva oEmbed API first — works without JS rendering
+        oembed = requests.get(
+            "https://www.canva.com/api/oembed",
+            params={"url": url, "format": "json"},
+            headers=headers, timeout=12
+        )
+        if oembed.status_code == 200:
+            data = oembed.json()
+            thumb = data.get("thumbnail_url")
+            if thumb:
+                img_resp = requests.get(thumb, headers=headers, timeout=12)
+                img_resp.raise_for_status()
+                return Image.open(BytesIO(img_resp.content)), None
+    except Exception:
+        pass
+
+    try:
+        # Fallback: meta-tag scrape (may not work on JS-rendered pages)
         resp = requests.get(url, headers=headers, timeout=12)
         soup = BeautifulSoup(resp.text, "html.parser")
         for prop in ["og:image", "twitter:image"]:
@@ -135,9 +163,10 @@ def get_canva_preview(url):
             if tag and tag.get("content"):
                 img_resp = requests.get(tag["content"], headers=headers, timeout=12)
                 return Image.open(BytesIO(img_resp.content)), None
-        return None, "Could not auto-fetch Canva preview."
-    except Exception as e:
-        return None, f"Could not fetch Canva preview: {e}"
+    except Exception:
+        pass
+
+    return None, "Canva preview couldn't be fetched (Canva requires a browser to render). Please upload the image using the tab below."
 
 def image_to_base64(img: Image.Image) -> str:
     buf = BytesIO()
@@ -493,26 +522,49 @@ def page_audit(api_key):
             elif df is not None:
                 st.success(f"✅ Sheet loaded — {len(df)} row(s) found")
 
-                # Row selector
+                # Row selector — use first non-empty cell for label
+                def _row_label(i):
+                    row = df.iloc[i]
+                    first_val = next((str(v)[:80] for v in row if str(v) not in ("", "nan", "NaN")), f"Row {i+1}")
+                    return f"Row {i+1}: {first_val}"
+
                 if len(df) > 1:
                     row_index = st.selectbox(
                         "Which row to audit?",
                         range(len(df)),
-                        format_func=lambda i: f"Row {i+1}: {str(df.iloc[i, 0])[:80]}"
+                        format_func=_row_label
                     )
 
-                # Column mapper
-                st.markdown("**Map your columns:**")
-                cols = ["— not in sheet —"] + list(df.columns)
+                # Column mapper with auto-detection
+                def _find_col(df_cols, keywords):
+                    for col in df_cols:
+                        cl = col.lower()
+                        if any(kw in cl for kw in keywords):
+                            return col
+                    return None
+
+                real_cols = list(df.columns)
+                auto_pt   = _find_col(real_cols, ["primary text", "primary", "ad copy", "body"])
+                auto_hl   = _find_col(real_cols, ["headline", "heading", "title"])
+                auto_desc = _find_col(real_cols, ["description", "desc"])
+                auto_url  = _find_col(real_cols, ["url", "link", "destination"])
+
+                NONE_OPT = "— not in sheet —"
+                cols = [NONE_OPT] + real_cols
+
+                def _idx(auto):
+                    return cols.index(auto) if auto and auto in cols else 0
+
+                st.markdown("**Map your columns** *(auto-detected — adjust if needed)*:")
                 cm1, cm2, cm3, cm4 = st.columns(4)
                 with cm1:
-                    pt_col  = st.selectbox("Primary Text",  cols, index=0)
+                    pt_col  = st.selectbox("Primary Text",  cols, index=_idx(auto_pt))
                 with cm2:
-                    hl_col  = st.selectbox("Headlines",     cols, index=0)
+                    hl_col  = st.selectbox("Headlines",     cols, index=_idx(auto_hl))
                 with cm3:
-                    desc_col= st.selectbox("Descriptions",  cols, index=0)
+                    desc_col= st.selectbox("Descriptions",  cols, index=_idx(auto_desc))
                 with cm4:
-                    url_col = st.selectbox("Final URL",     cols, index=0)
+                    url_col = st.selectbox("Final URL",     cols, index=_idx(auto_url))
 
                 row = df.iloc[row_index]
 
