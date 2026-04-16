@@ -9,6 +9,7 @@ from datetime import datetime
 import json
 import base64
 import anthropic
+import os
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -22,72 +23,34 @@ st.set_page_config(
 st.markdown("""
 <style>
   .section-header {
-    background: #1e293b;
-    color: #fff;
-    padding: 10px 16px;
-    border-radius: 8px;
-    font-weight: 700;
-    margin: 24px 0 10px 0;
-    font-size: 1em;
-    letter-spacing: 0.3px;
-  }
-  .verdict-box {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    padding: 20px;
-    margin: 12px 0;
-    font-style: italic;
-    color: #475569;
-    font-size: 1.05em;
+    background: #1e293b; color: #fff;
+    padding: 10px 16px; border-radius: 8px;
+    font-weight: 700; margin: 24px 0 10px 0;
+    font-size: 1em; letter-spacing: 0.3px;
   }
   .fix-item {
-    background: #fff5f5;
-    border-left: 4px solid #ef4444;
-    padding: 10px 14px;
-    border-radius: 0 8px 8px 0;
-    margin: 6px 0;
-    color: #1e293b;
+    background: #fff5f5; border-left: 4px solid #ef4444;
+    padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 6px 0;
   }
   .strength-item {
-    background: #f0fdf4;
-    border-left: 4px solid #22c55e;
-    padding: 10px 14px;
-    border-radius: 0 8px 8px 0;
-    margin: 6px 0;
-    color: #1e293b;
+    background: #f0fdf4; border-left: 4px solid #22c55e;
+    padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 6px 0;
   }
-  .score-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 10px 0;
-    border-bottom: 1px solid #f1f5f9;
+  .copy-preview {
+    background: #f8fafc; border: 1px solid #e2e8f0;
+    border-radius: 10px; padding: 16px; margin: 8px 0;
   }
-  .badge {
-    min-width: 52px;
-    text-align: center;
-    border-radius: 8px;
-    padding: 6px 4px;
-    font-weight: 800;
-    font-size: 1.3em;
-    line-height: 1;
-    flex-shrink: 0;
+  .copy-label {
+    font-size: 0.75em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px;
   }
-  .badge-label {
-    font-size: 0.6em;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    display: block;
-    margin-top: 2px;
+  .copy-value {
+    color: #1e293b; font-size: 0.95em; line-height: 1.6;
   }
-  .stButton > button[kind="primary"] {
-    background: #3b82f6;
-    color: white;
-    border: none;
-    font-weight: 700;
-    padding: 12px;
+  .headline-item {
+    background: #fff; border: 1px solid #e2e8f0;
+    border-radius: 6px; padding: 6px 10px; margin: 3px 0;
+    font-size: 0.9em; color: #334155;
   }
 </style>
 """, unsafe_allow_html=True)
@@ -95,45 +58,46 @@ st.markdown("""
 # ─── Constants ────────────────────────────────────────────────────────────────
 SCORE_COLOR = {5: "#22c55e", 4: "#84cc16", 3: "#eab308", 2: "#f97316", 1: "#ef4444", 0: "#94a3b8"}
 SCORE_LABEL = {5: "Excellent", 4: "Good", 3: "Average", 2: "Poor", 1: "Critical", 0: "N/A"}
+BRANDS_FILE = "brands.json"
 
-CHECKLIST = [
-    {"id": "hook_click",   "section": "1. Hook Strength",              "label": "Hook",             "desc": "Would YOU actually click on this ad if you were the target audience? Be honest.",             "visual": False},
-    {"id": "hook_angle",   "section": "1. Hook Strength",              "label": "Angle",            "desc": "Is there one main message/angle only, and is it actually convincing?",                       "visual": False},
-    {"id": "brand_align",  "section": "2. Brand Voice",                "label": "Brand Alignment",  "desc": "Do the language, words, colours and style match the client's brand?",                        "visual": True},
-    {"id": "client_req",   "section": "2. Brand Voice",                "label": "Client Requirements","desc": "Have we satisfied ALL client rules, asks and requirements?",                               "visual": False},
-    {"id": "visual_hier",  "section": "3. Ad Quality — Creative",      "label": "Visual Hierarchy", "desc": "Are visual hierarchy principles satisfied? Elements balanced? No cramped layouts?",           "visual": True},
-    {"id": "spacing",      "section": "3. Ad Quality — Creative",      "label": "Spacing",          "desc": "Is spacing BALANCED?",                                                                       "visual": True},
-    {"id": "readability",  "section": "3. Ad Quality — Creative",      "label": "Readability",      "desc": "F-Shape reading pattern followed? Text easy to read against background?",                    "visual": True},
-    {"id": "mobile",       "section": "3. Ad Quality — Creative",      "label": "Mobile Friendly",  "desc": "If viewed on mobile, can you read it clearly?",                                              "visual": True},
-    {"id": "format",       "section": "3. Ad Quality — Creative",      "label": "Format",           "desc": "Correct ratios (1:1 or 4:5 for Feed, 9:16 for Stories/Reels)? Safe zones respected?",       "visual": True},
-    {"id": "hygiene",      "section": "3. Ad Quality — Creative",      "label": "Hygiene",          "desc": 'No typos. Reads well. "Title Case" used for headlines.',                                     "visual": True},
-    {"id": "video_hook",   "section": "3a. Ad Quality — Video",        "label": "Video Hook",       "desc": "Is the first 3 seconds visually startling or highly engaging to stop the scroll?",          "visual": True},
-    {"id": "sound_off",    "section": "3a. Ad Quality — Video",        "label": "Sound-Off Friendly","desc": "Does the video make sense without sound? Are there captions/overlays?",                     "visual": True},
-    {"id": "pacing",       "section": "3a. Ad Quality — Video",        "label": "Pacing",           "desc": "Is editing fast enough? No long pauses. Every ~3 seconds, some kind of movement.",           "visual": True},
-    {"id": "text_hook",    "section": "4. Primary Text & Headlines",   "label": "Hook",             "desc": "Does the primary text start with a strong hook or question?",                                "visual": False},
-    {"id": "usps",         "section": "4. Primary Text & Headlines",   "label": "USPs",             "desc": "Are the USPs clear? Did you use numbers/symbols ($, %, +) to catch the eye?",               "visual": False},
-    {"id": "clarity",      "section": "4. Primary Text & Headlines",   "label": "Clarity",          "desc": "Is it written at a 5th-grade reading level?",                                               "visual": False},
+FULL_CHECKLIST = [
+    {"id": "hook_click",  "section": "1. Hook Strength",            "label": "Hook",              "desc": "Would YOU actually click on this ad if you were the target audience?",                    "type": "copy"},
+    {"id": "hook_angle",  "section": "1. Hook Strength",            "label": "Angle",             "desc": "Is there one main message/angle only, and is it actually convincing?",                    "type": "copy"},
+    {"id": "brand_align", "section": "2. Brand Voice",              "label": "Brand Alignment",   "desc": "Do language, words, colours and style match the client's brand?",                        "type": "both"},
+    {"id": "client_req",  "section": "2. Brand Voice",              "label": "Client Requirements","desc": "Have we satisfied ALL client rules, asks and requirements?",                             "type": "both"},
+    {"id": "visual_hier", "section": "3. Ad Quality — Creative",    "label": "Visual Hierarchy",  "desc": "Visual hierarchy principles satisfied? Elements balanced? No cramped layouts?",          "type": "visual"},
+    {"id": "spacing",     "section": "3. Ad Quality — Creative",    "label": "Spacing",           "desc": "Is spacing BALANCED?",                                                                   "type": "visual"},
+    {"id": "readability", "section": "3. Ad Quality — Creative",    "label": "Readability",       "desc": "F-Shape reading pattern followed? Text easy to read against background?",               "type": "visual"},
+    {"id": "mobile",      "section": "3. Ad Quality — Creative",    "label": "Mobile Friendly",   "desc": "If viewed on mobile, can you read it clearly?",                                         "type": "visual"},
+    {"id": "format",      "section": "3. Ad Quality — Creative",    "label": "Format",            "desc": "Correct ratios (1:1 or 4:5 for Feed, 9:16 for Stories/Reels)? Safe zones respected?",  "type": "visual"},
+    {"id": "hygiene",     "section": "3. Ad Quality — Creative",    "label": "Hygiene",           "desc": 'No typos. Reads well. "Title Case" used for headlines.',                                "type": "visual"},
+    {"id": "video_hook",  "section": "3a. Ad Quality — Video",      "label": "Video Hook",        "desc": "Is the first 3 seconds visually startling to stop the scroll?",                         "type": "visual"},
+    {"id": "sound_off",   "section": "3a. Ad Quality — Video",      "label": "Sound-Off Friendly","desc": "Does the video make sense without sound? Are there captions/overlays?",                 "type": "visual"},
+    {"id": "pacing",      "section": "3a. Ad Quality — Video",      "label": "Pacing",            "desc": "Editing fast enough? No long pauses. Every ~3 seconds, some movement.",                 "type": "visual"},
+    {"id": "text_hook",   "section": "4. Primary Text & Headlines", "label": "Hook",              "desc": "Does the primary text start with a strong hook or question?",                           "type": "copy"},
+    {"id": "usps",        "section": "4. Primary Text & Headlines", "label": "USPs",              "desc": "Are USPs clear? Numbers/symbols ($, %, +) used to catch the eye?",                     "type": "copy"},
+    {"id": "clarity",     "section": "4. Primary Text & Headlines", "label": "Clarity",           "desc": "Is it written at a 5th-grade reading level?",                                          "type": "copy"},
 ]
 
-ECOMMERCE_CONTEXT = """
-For ECOMMERCE accounts, weight these heavily:
-- Product clarity — can you tell what's being sold in under 2 seconds?
-- Benefit-led copy (not feature-led)
-- Social proof signals (reviews, numbers, testimonials)
-- Clear offer/price anchoring
-- Strong CTA driving to product or collection page
-- Scroll-stopping visual with the product as the hero
-"""
+ECOMMERCE_CONTEXT = """For ECOMMERCE: product clarity in under 2 seconds, benefit-led copy, social proof, clear offer/price, strong CTA to product page, product as hero in creative."""
+LEADGEN_CONTEXT  = """For LEAD GEN: pain point clarity, lead magnet value crystal clear, low-friction language, trust signals, specific CTA about what happens next, audience self-selection."""
 
-LEADGEN_CONTEXT = """
-For LEAD GEN accounts, weight these heavily:
-- Pain point clarity — does the ad speak directly to the prospect's problem?
-- Value of the lead magnet/offer is crystal clear
-- Low-friction language that reduces commitment anxiety
-- Trust signals (qualifications, logos, social proof)
-- CTA is specific about what happens next ("Get free quote", not just "Learn more")
-- Right people should self-select in
-"""
+
+# ─── Brand Storage ────────────────────────────────────────────────────────────
+
+def load_brands():
+    if os.path.exists(BRANDS_FILE):
+        try:
+            with open(BRANDS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_brands(brands: dict):
+    with open(BRANDS_FILE, "w") as f:
+        json.dump(brands, f, indent=2)
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -150,72 +114,123 @@ def read_public_sheet(url):
         df = pd.read_csv(csv_url).dropna(how="all")
         return df, None
     except Exception:
-        return None, "Could not read sheet. Make sure sharing is set to 'Anyone with the link can view'."
+        return None, "Could not read sheet. Make sure sharing is 'Anyone with the link can view'."
+
+def parse_headlines(raw: str) -> list:
+    """Split headlines that are in the same cell separated by newlines or semicolons."""
+    if not raw or str(raw).strip() in ("", "nan"):
+        return []
+    raw = str(raw).strip()
+    # split on newlines or semicolons
+    lines = re.split(r'\n|;', raw)
+    return [l.strip() for l in lines if l.strip()]
 
 def get_canva_preview(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}
         resp = requests.get(url, headers=headers, timeout=12)
         soup = BeautifulSoup(resp.text, "html.parser")
-        og = soup.find("meta", property="og:image")
-        if og and og.get("content"):
-            img_resp = requests.get(og["content"], headers=headers, timeout=12)
-            return Image.open(BytesIO(img_resp.content)), None
-        return None, "Could not auto-fetch Canva preview — please upload a screenshot."
+        for prop in ["og:image", "twitter:image"]:
+            tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+            if tag and tag.get("content"):
+                img_resp = requests.get(tag["content"], headers=headers, timeout=12)
+                return Image.open(BytesIO(img_resp.content)), None
+        return None, "Could not auto-fetch Canva preview."
     except Exception as e:
         return None, f"Could not fetch Canva preview: {e}"
 
 def image_to_base64(img: Image.Image) -> str:
     buf = BytesIO()
-    img.save(buf, format="PNG")
+    img = img.convert("RGB")
+    img.save(buf, format="JPEG", quality=85)
     return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
-def build_checklist_text():
+def build_checklist_section(audit_mode: str) -> str:
+    """Return checklist text filtered by audit mode."""
+    types = {"full": ["copy", "visual", "both"], "creative": ["visual", "both"]}
+    allowed = types.get(audit_mode, ["copy", "visual", "both"])
     out, section = "", ""
-    for item in CHECKLIST:
+    for item in FULL_CHECKLIST:
+        if item["type"] not in allowed:
+            continue
         if item["section"] != section:
             section = item["section"]
             out += f"\n### {section}\n"
         out += f'- **{item["id"]}** ({item["label"]}): {item["desc"]}\n'
     return out
 
-def build_system_prompt(account_type, platform):
+def build_system_prompt(account_type, platform, audit_mode, brand: dict = None):
     context = ECOMMERCE_CONTEXT if account_type == "Ecommerce" else LEADGEN_CONTEXT
+    brand_section = ""
+    if brand:
+        brand_section = f"""
+**BRAND GUIDELINES — {brand.get('name', 'Unknown')}:**
+- Colours: {brand.get('colors', 'Not specified')}
+- Fonts: {brand.get('fonts', 'Not specified')}
+- Tone of voice: {brand.get('tone', 'Not specified')}
+- Brand Dos: {brand.get('dos', 'Not specified')}
+- Brand Don'ts: {brand.get('donts', 'Not specified')}
+- Additional guidelines: {brand.get('guidelines', 'Not specified')}
+
+Apply these brand guidelines strictly when scoring Brand Alignment and all visual criteria.
+"""
+
+    mode_instruction = (
+        "You are auditing the CREATIVE ONLY — do not score copy items. "
+        "For copy-type items, set score to 0 and rationale to 'N/A — creative-only audit'."
+        if audit_mode == "creative"
+        else "You are auditing both the ad copy AND the creative."
+    )
+
     return f"""You are a senior paid media creative auditor specialising in {platform} advertising for {account_type} businesses.
 
-You audit ad creatives against a structured checklist and return strict, honest JSON scorecards.
+{mode_instruction}
 
 {context}
+{brand_section}
+Scoring: 5=Excellent, 4=Good, 3=Average, 2=Poor, 1=Critical, 0=N/A
+Be strict. 4 or 5 must be earned.
+For video items (video_hook, sound_off, pacing): if static image, score 0 with rationale "N/A — static image".
+Return ONLY valid JSON. No markdown fences. No text outside the JSON."""
 
-Scoring scale:
-- 5 = Excellent — best practice, publish-ready
-- 4 = Good — minor improvements possible
-- 3 = Average — clear room for improvement
-- 2 = Poor — significant issue, likely hurts performance
-- 1 = Critical — must fix before going live
+def build_user_message(ad_copy: dict, audit_mode: str, canva_url: str, has_image: bool, is_video: bool):
+    copy_section = ""
+    if audit_mode == "full":
+        primary = ad_copy.get("primary_text", "")
+        headlines = ad_copy.get("headlines", [])
+        descriptions = ad_copy.get("descriptions", [])
+        final_url = ad_copy.get("final_url", "")
 
-Be strict and honest. A 4 or 5 must be earned. Do not give 5s by default.
-For video-specific items (video_hook, sound_off, pacing): if the creative is a static image, score them 0 and rationale "N/A — static image".
-Return ONLY valid JSON, no markdown fences, no explanation outside the JSON."""
+        copy_section = "\n**AD COPY:**\n"
+        if primary:
+            copy_section += f"Primary Text:\n{primary}\n\n"
+        if headlines:
+            copy_section += "Headlines:\n" + "\n".join(f"  - {h}" for h in headlines) + "\n\n"
+        if descriptions:
+            copy_section += "Descriptions:\n" + "\n".join(f"  - {d}" for d in descriptions) + "\n\n"
+        if final_url:
+            copy_section += f"Final URL: {final_url}\n"
 
-def build_user_message(ad_data, canva_url, has_image):
-    copy_lines = "\n".join(f"  - **{k}**: {v}" for k, v in ad_data.items() if v and str(v).strip() not in ("", "nan"))
-    ids = [item["id"] for item in CHECKLIST]
-    empty = ",\n    ".join(f'"{i}": {{"score": 0, "rationale": "..."}}' for i in ids)
-    image_note = "[A screenshot of the Canva creative is attached — analyse it visually for all creative/visual criteria.]" if has_image else f"[Canva link: {canva_url} — analyse the visual as best you can from context.]"
+    creative_note = ""
+    if has_image and not is_video:
+        creative_note = "[Static image creative attached — analyse visually for all creative criteria.]"
+    elif is_video:
+        creative_note = "[Video creative uploaded — this is a video ad. Score video-specific items (video_hook, sound_off, pacing). A thumbnail/frame is attached if provided.]"
+    else:
+        creative_note = f"[Canva link: {canva_url} — no image could be fetched. Score visual items based on best judgement from copy context.]"
+
+    ids_filtered = [item["id"] for item in FULL_CHECKLIST]
+    empty = ",\n    ".join(f'"{i}": {{"score": 0, "rationale": "..."}}' for i in ids_filtered)
 
     return f"""Please audit this ad creative:
-
-**AD COPY:**
-{copy_lines}
-
+{copy_section}
 **CREATIVE:**
-{image_note}
+{creative_note}
 
 **CHECKLIST:**
-{build_checklist_text()}
+{build_checklist_section(audit_mode)}
 
-Return ONLY this JSON (no markdown, no text before or after):
+Return ONLY this JSON:
 
 {{
   "scores": {{
@@ -228,21 +243,17 @@ Return ONLY this JSON (no markdown, no text before or after):
   "one_line_verdict": "One honest sentence summary."
 }}"""
 
-def run_audit(api_key, account_type, platform, ad_data, image: Image.Image, canva_url):
+def run_audit(api_key, account_type, platform, audit_mode, ad_copy, image, canva_url, is_video, brand=None):
     client = anthropic.Anthropic(api_key=api_key)
     has_image = image is not None
-    system = build_system_prompt(account_type, platform)
-    user_text = build_user_message(ad_data, canva_url, has_image)
+    system = build_system_prompt(account_type, platform, audit_mode, brand)
+    user_text = build_user_message(ad_copy, audit_mode, canva_url, has_image, is_video)
 
     content = []
     if has_image:
         content.append({
             "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": image_to_base64(image),
-            }
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_to_base64(image)}
         })
     content.append({"type": "text", "text": user_text})
 
@@ -252,61 +263,57 @@ def run_audit(api_key, account_type, platform, ad_data, image: Image.Image, canv
         system=system,
         messages=[{"role": "user", "content": content}]
     )
-
     raw = response.content[0].text.strip()
-    # strip markdown fences if Claude adds them
     raw = re.sub(r'^```(?:json)?\s*', '', raw)
     raw = re.sub(r'\s*```$', '', raw)
     return json.loads(raw)
 
+
 # ─── Render Scorecard ─────────────────────────────────────────────────────────
 
-def render_scorecard(results, account_type, platform, ad_data):
-    scores = results.get("scores", {})
-    overall = int(results.get("overall_score", 0))
-    fixes = [f for f in results.get("priority_fixes", []) if f and f != "..."]
-    strengths = [s for s in results.get("strengths", []) if s and s != "..."]
-    ready = results.get("ready_to_publish", False)
-    verdict = results.get("one_line_verdict", "")
+def render_scorecard(results, account_type, platform, audit_mode):
+    scores   = results.get("scores", {})
+    overall  = int(results.get("overall_score", 0))
+    fixes    = [f for f in results.get("priority_fixes", []) if f and f != "..."]
+    strengths= [s for s in results.get("strengths", []) if s and s != "..."]
+    ready    = results.get("ready_to_publish", False)
+    verdict  = results.get("one_line_verdict", "")
 
     oc = SCORE_COLOR.get(overall, "#94a3b8")
-    ready_color = "#22c55e" if ready else "#ef4444"
-    ready_text  = "✅ Ready to Publish" if ready else "🚫 Not Ready to Publish"
+    rc = "#22c55e" if ready else "#ef4444"
+    rt = "✅ Ready to Publish" if ready else "🚫 Not Ready to Publish"
 
-    # Overall
-    st.markdown("## Audit Results")
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown(f"""
         <div style="border:3px solid {oc}; border-radius:14px; padding:28px;
                     text-align:center; background:{oc}12">
           <div style="font-size:3.8em; font-weight:900; color:{oc}; line-height:1">{overall}/5</div>
-          <div style="font-size:0.95em; color:#64748b; margin:6px 0">Overall Creative Score</div>
-          <div style="font-weight:700; color:{ready_color}; font-size:1em">{ready_text}</div>
-          <div style="color:#64748b; font-size:0.85em; margin-top:10px; font-style:italic">
-            "{verdict}"
-          </div>
+          <div style="font-size:.95em; color:#64748b; margin:6px 0">Overall Score</div>
+          <div style="font-weight:700; color:{rc}; font-size:1em">{rt}</div>
+          <div style="color:#64748b; font-size:.85em; margin-top:10px; font-style:italic">"{verdict}"</div>
         </div>
         """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Scorecard rows by section
+    allowed_types = ["copy", "visual", "both"] if audit_mode == "full" else ["visual", "both"]
     current_section = ""
-    for item in CHECKLIST:
+    for item in FULL_CHECKLIST:
+        if item["type"] not in allowed_types:
+            continue
         if item["section"] != current_section:
             current_section = item["section"]
             st.markdown(f'<div class="section-header">{current_section}</div>', unsafe_allow_html=True)
 
-        score_data = scores.get(item["id"], {})
-        score = score_data.get("score", 0)
+        sd    = scores.get(item["id"], {})
+        score = sd.get("score", 0)
         try:
             score = int(score)
         except (TypeError, ValueError):
             score = 0
-        rationale = score_data.get("rationale", "—")
-
-        c = SCORE_COLOR.get(score, "#94a3b8")
+        rationale = sd.get("rationale", "—")
+        c   = SCORE_COLOR.get(score, "#94a3b8")
         lbl = SCORE_LABEL.get(score, "N/A")
 
         col1, col2, col3 = st.columns([2, 1, 4])
@@ -318,19 +325,15 @@ def render_scorecard(results, account_type, platform, ad_data):
             <div style="background:{c}15; border:2px solid {c}; border-radius:8px;
                         padding:10px 6px; text-align:center">
               <div style="font-size:1.8em; font-weight:900; color:{c}; line-height:1">{score}</div>
-              <div style="font-size:0.6em; color:{c}; font-weight:700;
-                          text-transform:uppercase; letter-spacing:0.5px">{lbl}</div>
-            </div>
-            """, unsafe_allow_html=True)
+              <div style="font-size:.6em; color:{c}; font-weight:700;
+                          text-transform:uppercase; letter-spacing:.5px">{lbl}</div>
+            </div>""", unsafe_allow_html=True)
         with col3:
             st.markdown(f"<div style='padding-top:8px; color:#334155; line-height:1.5'>{rationale}</div>",
                         unsafe_allow_html=True)
-
-        st.markdown("")  # spacer
+        st.markdown("")
 
     st.markdown("---")
-
-    # Fixes + Strengths
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("### 🔴 Priority Fixes")
@@ -342,7 +345,7 @@ def render_scorecard(results, account_type, platform, ad_data):
             st.markdown(f'<div class="strength-item">{s}</div>', unsafe_allow_html=True)
 
 
-def generate_html_report(results, account_type, platform, ad_data, canva_url):
+def generate_html_report(results, account_type, platform, audit_mode, ad_copy, canva_url, brand_name=""):
     scores   = results.get("scores", {})
     overall  = int(results.get("overall_score", 0))
     fixes    = [f for f in results.get("priority_fixes", []) if f and f != "..."]
@@ -354,8 +357,11 @@ def generate_html_report(results, account_type, platform, ad_data, canva_url):
     rc       = "#22c55e" if ready else "#ef4444"
     rt       = "Ready to Publish" if ready else "Not Ready to Publish"
 
+    allowed_types = ["copy", "visual", "both"] if audit_mode == "full" else ["visual", "both"]
     rows = ""
-    for item in CHECKLIST:
+    for item in FULL_CHECKLIST:
+        if item["type"] not in allowed_types:
+            continue
         sd    = scores.get(item["id"], {})
         score = int(sd.get("score", 0)) if sd.get("score") else 0
         rat   = sd.get("rationale", "")
@@ -372,17 +378,16 @@ def generate_html_report(results, account_type, platform, ad_data, canva_url):
           <td style="padding:10px;border-bottom:1px solid #f1f5f9;color:#475569;font-size:.9em">{rat}</td>
         </tr>"""
 
-    ad_rows = "".join(
-        f"<tr><td style='padding:6px 10px;font-weight:600;color:#374151;border-bottom:1px solid #f1f5f9'>{k}</td>"
-        f"<td style='padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#475569'>{v}</td></tr>"
-        for k, v in ad_data.items() if v and str(v).strip() not in ("", "nan")
+    headlines_html = "".join(
+        f"<li>{h}</li>" for h in ad_copy.get("headlines", [])
     )
     fix_items      = "".join(f"<li style='margin:6px 0'>{f}</li>" for f in fixes)
     strength_items = "".join(f"<li style='margin:6px 0'>{s}</li>" for s in strengths)
+    mode_label     = "Full Audit" if audit_mode == "full" else "Creative-Only Audit"
+    brand_label    = f" &nbsp;|&nbsp; Brand: {brand_name}" if brand_name else ""
 
     return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8">
-<title>Ad Creative Audit Report</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Ad Creative Audit Report</title>
 <style>
   body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
        margin:0;padding:40px;color:#1e293b;background:#f8fafc}}
@@ -394,27 +399,38 @@ def generate_html_report(results, account_type, platform, ad_data, canva_url):
   th{{background:#f1f5f9;padding:10px 12px;text-align:left;font-size:.85em;
       text-transform:uppercase;letter-spacing:.5px;color:#64748b}}
   .meta{{color:#64748b;font-size:.9em;margin-bottom:24px}}
-  .overall{{display:inline-block;padding:24px 48px;border:3px solid {oc};
-            border-radius:14px;text-align:center;background:{oc}10}}
   @media print{{body{{background:white}}.container{{box-shadow:none}}}}
 </style></head>
 <body><div class="container">
   <h1>📋 Ad Creative Audit Report</h1>
-  <div class="meta">Generated: {now} &nbsp;|&nbsp; Platform: {platform} &nbsp;|&nbsp; Type: {account_type}</div>
-  <h2>Overall Score</h2>
-  <div class="overall">
+  <div class="meta">Generated: {now} &nbsp;|&nbsp; {platform} &nbsp;|&nbsp; {account_type} &nbsp;|&nbsp; {mode_label}{brand_label}</div>
+
+  <div style="border:3px solid {oc};border-radius:14px;padding:24px;text-align:center;
+              background:{oc}10;display:inline-block;min-width:220px">
     <div style="font-size:3em;font-weight:900;color:{oc};line-height:1">{overall}/5</div>
-    <div style="color:#64748b;margin:4px 0">Overall Creative Score</div>
+    <div style="color:#64748b;margin:4px 0">Overall Score</div>
     <div style="color:{rc};font-weight:700;margin-top:8px">{rt}</div>
     <div style="font-style:italic;color:#475569;margin-top:8px">&ldquo;{verdict}&rdquo;</div>
   </div>
+
   <h2>Ad Copy</h2>
-  <table><tbody>{ad_rows}</tbody></table>
+  <table><tbody>
+    <tr><td style="padding:8px 10px;font-weight:600;color:#374151;border-bottom:1px solid #f1f5f9;width:160px">Primary Text</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;white-space:pre-wrap">{ad_copy.get('primary_text','—')}</td></tr>
+    <tr><td style="padding:8px 10px;font-weight:600;color:#374151;border-bottom:1px solid #f1f5f9">Headlines</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9"><ul style="margin:0;padding-left:18px">{headlines_html}</ul></td></tr>
+    <tr><td style="padding:8px 10px;font-weight:600;color:#374151;border-bottom:1px solid #f1f5f9">Descriptions</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9">{' / '.join(ad_copy.get('descriptions',[]))}</td></tr>
+    <tr><td style="padding:8px 10px;font-weight:600;color:#374151">Final URL</td>
+        <td style="padding:8px 10px">{ad_copy.get('final_url','—')}</td></tr>
+  </tbody></table>
+
   <h2>Detailed Scorecard</h2>
   <table><thead><tr>
     <th>Section</th><th>Criteria</th>
     <th style="text-align:center">Score</th><th>Rationale</th>
   </tr></thead><tbody>{rows}</tbody></table>
+
   <div style="display:flex;gap:32px;margin-top:32px">
     <div style="flex:1;background:#fff5f5;border-radius:10px;padding:20px">
       <h2 style="margin-top:0">🔴 Priority Fixes</h2><ul>{fix_items}</ul>
@@ -429,138 +445,207 @@ def generate_html_report(results, account_type, platform, ad_data, canva_url):
 </div></body></html>"""
 
 
-# ─── App ──────────────────────────────────────────────────────────────────────
+# ─── Pages ────────────────────────────────────────────────────────────────────
 
-def main():
-    # Load API key from Streamlit secrets
-    try:
-        api_key = st.secrets["ANTHROPIC_API_KEY"]
-    except Exception:
-        st.error("❌ API key not configured. Add ANTHROPIC_API_KEY to your Streamlit secrets.")
-        st.stop()
-
-    with st.sidebar:
-        st.markdown("## ⚙️ Settings")
-        platform     = st.selectbox("Ad Platform", ["Meta Ads", "Google Ads"])
-        account_type = st.selectbox("Account Type", ["Ecommerce", "Lead Gen"])
-        st.markdown("---")
-        st.markdown("**How to use:**")
-        st.markdown("""
-1. Select platform & account type
-2. Paste Google Sheet URL
-3. Paste Canva share link
-4. Click **Run Audit**
-5. Download your report
-        """)
-        st.markdown("---")
-        st.caption("Matriarch Digital — Ad Creative Audit Agent")
-
+def page_audit(api_key):
     st.title("📋 Ad Creative Audit Agent")
     st.caption("Automated creative auditing powered by Claude AI")
 
+    brands = load_brands()
+
+    # ── Sidebar controls ──────────────────────────────────────────────────────
+    with st.sidebar:
+        st.markdown("## ⚙️ Audit Settings")
+        platform     = st.selectbox("Ad Platform", ["Meta Ads", "Google Ads"])
+        account_type = st.selectbox("Account Type", ["Ecommerce", "Lead Gen"])
+        audit_mode   = st.radio("Audit Mode", ["Full Audit", "Creative Only"],
+                                help="Full Audit scores copy + creative. Creative Only scores the image/video only.")
+        audit_mode_key = "full" if audit_mode == "Full Audit" else "creative"
+
+        st.markdown("---")
+        st.markdown("**Brand / Client**")
+        brand_options = ["None (no brand guidelines)"] + list(brands.keys())
+        selected_brand_name = st.selectbox("Apply brand guidelines", brand_options)
+        selected_brand = brands.get(selected_brand_name) if selected_brand_name != "None (no brand guidelines)" else None
+        if selected_brand:
+            st.caption(f"✅ Brand DNA loaded: **{selected_brand_name}**")
+
+        st.markdown("---")
+        st.caption("Matriarch Digital — Ad Creative Audit Agent")
+
     st.markdown("---")
 
-    # ── Inputs ────────────────────────────────────────────────────────────────
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### 📊 Google Sheet (Ad Copy)")
-        sheet_url = st.text_input("Sheet URL",
-                                  placeholder="https://docs.google.com/spreadsheets/d/...",
-                                  label_visibility="collapsed")
-    with col2:
-        st.markdown("### 🎨 Canva Creative")
-        canva_url = st.text_input("Canva Share Link",
-                                  placeholder="https://www.canva.com/design/...",
-                                  label_visibility="collapsed")
+    # ── Step 1: Google Sheet ──────────────────────────────────────────────────
+    if audit_mode_key == "full":
+        st.markdown("### 📊 Step 1 — Ad Copy (Google Sheet)")
+        sheet_url = st.text_input("Google Sheet URL (must be public)",
+                                  placeholder="https://docs.google.com/spreadsheets/d/...")
 
-    # ── Load Sheet ────────────────────────────────────────────────────────────
-    df        = None
-    ad_data   = {}
-    row_index = 0
+        df        = None
+        ad_copy   = {"primary_text": "", "headlines": [], "descriptions": [], "final_url": ""}
+        row_index = 0
 
-    if sheet_url:
-        with st.spinner("Reading sheet..."):
-            df, err = read_public_sheet(sheet_url)
-        if err:
-            st.error(f"❌ {err}")
-        elif df is not None:
-            st.success(f"✅ Sheet loaded — {len(df)} row(s)")
-            with st.expander("Preview sheet data", expanded=False):
-                st.dataframe(df, use_container_width=True)
-            if len(df) > 1:
-                row_index = st.selectbox(
-                    "Which ad to audit?",
-                    range(len(df)),
-                    format_func=lambda i: f"Row {i+1}: {str(df.iloc[i, 0])[:70]}"
-                )
-            row     = df.iloc[row_index]
-            ad_data = {
-                col: str(row[col])
-                for col in df.columns
-                if pd.notna(row[col]) and str(row[col]).strip() not in ("", "nan")
-            }
+        if sheet_url:
+            with st.spinner("Reading sheet..."):
+                df, err = read_public_sheet(sheet_url)
+            if err:
+                st.error(f"❌ {err}")
+            elif df is not None:
+                st.success(f"✅ Sheet loaded — {len(df)} row(s) found")
 
-    # ── Load Canva ────────────────────────────────────────────────────────────
-    canva_image = None
+                # Row selector
+                if len(df) > 1:
+                    row_index = st.selectbox(
+                        "Which row to audit?",
+                        range(len(df)),
+                        format_func=lambda i: f"Row {i+1}: {str(df.iloc[i, 0])[:80]}"
+                    )
+
+                # Column mapper
+                st.markdown("**Map your columns:**")
+                cols = ["— not in sheet —"] + list(df.columns)
+                cm1, cm2, cm3, cm4 = st.columns(4)
+                with cm1:
+                    pt_col  = st.selectbox("Primary Text",  cols, index=0)
+                with cm2:
+                    hl_col  = st.selectbox("Headlines",     cols, index=0)
+                with cm3:
+                    desc_col= st.selectbox("Descriptions",  cols, index=0)
+                with cm4:
+                    url_col = st.selectbox("Final URL",     cols, index=0)
+
+                row = df.iloc[row_index]
+
+                primary_text = str(row[pt_col])   if pt_col  != "— not in sheet —" else ""
+                headlines_raw= str(row[hl_col])   if hl_col  != "— not in sheet —" else ""
+                desc_raw     = str(row[desc_col]) if desc_col!= "— not in sheet —" else ""
+                final_url    = str(row[url_col])  if url_col != "— not in sheet —" else ""
+
+                headlines    = parse_headlines(headlines_raw)
+                descriptions = parse_headlines(desc_raw)
+
+                ad_copy = {
+                    "primary_text": primary_text if primary_text not in ("", "nan") else "",
+                    "headlines":    headlines,
+                    "descriptions": descriptions,
+                    "final_url":    final_url if final_url not in ("", "nan") else "",
+                }
+
+                # Preview
+                st.markdown("**Ad Copy Preview:**")
+                with st.container():
+                    st.markdown('<div class="copy-preview">', unsafe_allow_html=True)
+                    if ad_copy["primary_text"]:
+                        st.markdown('<div class="copy-label">Primary Text</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="copy-value">{ad_copy["primary_text"]}</div>', unsafe_allow_html=True)
+                    if ad_copy["headlines"]:
+                        st.markdown('<div class="copy-label" style="margin-top:12px">Headlines</div>', unsafe_allow_html=True)
+                        for h in ad_copy["headlines"]:
+                            st.markdown(f'<div class="headline-item">📌 {h}</div>', unsafe_allow_html=True)
+                    if ad_copy["descriptions"]:
+                        st.markdown('<div class="copy-label" style="margin-top:12px">Descriptions</div>', unsafe_allow_html=True)
+                        for d in ad_copy["descriptions"]:
+                            st.markdown(f'<div class="headline-item">📝 {d}</div>', unsafe_allow_html=True)
+                    if ad_copy["final_url"]:
+                        st.markdown(f'<div class="copy-label" style="margin-top:12px">Final URL</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="copy-value">🔗 {ad_copy["final_url"]}</div>', unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        ad_copy = {"primary_text": "", "headlines": [], "descriptions": [], "final_url": ""}
+        st.info("ℹ️ Creative-Only mode — no ad copy needed.")
+
+    st.markdown("---")
+
+    # ── Step 2: Creative ──────────────────────────────────────────────────────
+    st.markdown("### 🎨 Step 2 — Creative (Image or Video)")
+
+    canva_url   = st.text_input("Canva Share Link (optional)",
+                                placeholder="https://www.canva.com/design/...")
+    creative_image = None
+    is_video       = False
 
     if canva_url:
-        with st.spinner("Fetching Canva preview..."):
-            canva_image, err = get_canva_preview(canva_url)
+        with st.spinner("Trying to fetch Canva preview..."):
+            creative_image, err = get_canva_preview(canva_url)
         if err:
-            st.warning(f"⚠️ {err}")
-            uploaded = st.file_uploader("Upload creative screenshot instead",
-                                        type=["png", "jpg", "jpeg"])
-            if uploaded:
-                canva_image = Image.open(uploaded)
-                st.success("✅ Screenshot uploaded")
-        if canva_image:
-            st.image(canva_image, caption="Creative Preview", use_column_width=True)
+            st.warning(f"⚠️ Could not auto-fetch: {err}")
+        else:
+            st.success("✅ Canva preview loaded")
+
+    st.markdown("**Upload creative file** (required if Canva auto-fetch fails):")
+    tab_img, tab_vid = st.tabs(["🖼️ Static Image", "🎬 Video"])
+
+    with tab_img:
+        uploaded_img = st.file_uploader("Upload image", type=["png", "jpg", "jpeg", "webp"],
+                                        key="img_upload", label_visibility="collapsed")
+        if uploaded_img:
+            creative_image = Image.open(uploaded_img)
+            is_video = False
+            st.success("✅ Image uploaded")
+
+    with tab_vid:
+        uploaded_vid = st.file_uploader("Upload video thumbnail/frame", type=["png", "jpg", "jpeg"],
+                                        key="vid_upload",
+                                        help="Upload a screenshot of the first 3 seconds of your video",
+                                        label_visibility="collapsed")
+        st.caption("Upload a screenshot/thumbnail of the video — Claude will score video-specific criteria.")
+        if uploaded_vid:
+            creative_image = Image.open(uploaded_vid)
+            is_video = True
+            st.success("✅ Video thumbnail uploaded — video audit mode active")
+
+    if creative_image:
+        st.image(creative_image, caption="Creative Preview", use_column_width=True)
 
     st.markdown("---")
 
-    # ── Run Audit Button ──────────────────────────────────────────────────────
-    can_audit = bool(api_key) and bool(ad_data)
-
+    # ── Run Audit ─────────────────────────────────────────────────────────────
+    can_audit = bool(creative_image or canva_url)
     if not can_audit:
-        if not sheet_url:
-            st.info("Paste your Google Sheet URL above to begin.")
-    else:
+        st.info("Upload a creative or paste a Canva link to run the audit.")
+
+    if can_audit:
         if st.button("⚡ Run Audit", type="primary", use_container_width=True):
-            with st.spinner("Claude is auditing your creative — this takes 15–30 seconds..."):
+            with st.spinner("Claude is auditing your creative — 15–30 seconds..."):
                 try:
-                    results = run_audit(api_key, account_type, platform,
-                                        ad_data, canva_image, canva_url or "")
-                    st.session_state["results"]      = results
-                    st.session_state["ad_data"]      = ad_data
-                    st.session_state["account_type"] = account_type
-                    st.session_state["platform"]     = platform
-                    st.session_state["canva_url"]    = canva_url or ""
+                    results = run_audit(
+                        api_key, account_type, platform, audit_mode_key,
+                        ad_copy, creative_image, canva_url or "", is_video, selected_brand
+                    )
+                    st.session_state["results"]       = results
+                    st.session_state["ad_copy"]       = ad_copy
+                    st.session_state["account_type"]  = account_type
+                    st.session_state["platform"]      = platform
+                    st.session_state["audit_mode"]    = audit_mode_key
+                    st.session_state["canva_url"]     = canva_url or ""
+                    st.session_state["brand_name"]    = selected_brand_name if selected_brand else ""
                     st.success("✅ Audit complete!")
                 except anthropic.AuthenticationError:
-                    st.error("❌ Invalid API key. Check your key at console.anthropic.com")
+                    st.error("❌ Invalid API key. Check Streamlit secrets → ANTHROPIC_API_KEY")
                 except json.JSONDecodeError as e:
-                    st.error(f"❌ Claude returned unexpected output. Try again. ({e})")
+                    st.error(f"❌ Unexpected response format. Try again. ({e})")
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
 
     # ── Results ───────────────────────────────────────────────────────────────
     if "results" in st.session_state:
         st.markdown("---")
+        st.markdown("## Audit Results")
         render_scorecard(
             st.session_state["results"],
-            st.session_state.get("account_type", account_type),
-            st.session_state.get("platform", platform),
-            st.session_state.get("ad_data", ad_data),
+            st.session_state.get("account_type", ""),
+            st.session_state.get("platform", ""),
+            st.session_state.get("audit_mode", "full"),
         )
-
         st.markdown("---")
-        st.markdown("### 📄 Download Report")
         html = generate_html_report(
             st.session_state["results"],
-            st.session_state.get("account_type", account_type),
-            st.session_state.get("platform", platform),
-            st.session_state.get("ad_data", ad_data),
+            st.session_state.get("account_type", ""),
+            st.session_state.get("platform", ""),
+            st.session_state.get("audit_mode", "full"),
+            st.session_state.get("ad_copy", {}),
             st.session_state.get("canva_url", ""),
+            st.session_state.get("brand_name", ""),
         )
         st.download_button(
             "⬇️ Download HTML Report",
@@ -570,7 +655,151 @@ def main():
             type="primary",
             use_container_width=True
         )
-        st.caption("Open the .html file in any browser → File → Print → Save as PDF")
+        st.caption("Open in browser → File → Print → Save as PDF")
+
+
+def page_brand_dna():
+    st.title("🎨 Brand DNA Manager")
+    st.caption("Create and manage brand profiles. These are applied to audits to check brand alignment.")
+
+    brands = load_brands()
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.markdown("### Saved Brands")
+        if not brands:
+            st.info("No brands saved yet.")
+        else:
+            for name in list(brands.keys()):
+                bcol1, bcol2 = st.columns([3, 1])
+                with bcol1:
+                    st.markdown(f"**{name}**")
+                with bcol2:
+                    if st.button("🗑️", key=f"del_{name}", help=f"Delete {name}"):
+                        del brands[name]
+                        save_brands(brands)
+                        st.rerun()
+
+        st.markdown("---")
+        # Export
+        if brands:
+            st.download_button(
+                "⬇️ Export brands.json",
+                data=json.dumps(brands, indent=2),
+                file_name="brands.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
+        # Import
+        st.markdown("**Import brands.json:**")
+        imported = st.file_uploader("Import", type=["json"], label_visibility="collapsed")
+        if imported:
+            try:
+                imported_brands = json.load(imported)
+                brands.update(imported_brands)
+                save_brands(brands)
+                st.success(f"✅ Imported {len(imported_brands)} brand(s)")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Import failed: {e}")
+
+    with col2:
+        st.markdown("### Add / Edit Brand")
+
+        edit_options = ["— Create new brand —"] + list(brands.keys())
+        edit_target  = st.selectbox("Edit existing or create new", edit_options)
+
+        existing = brands.get(edit_target, {}) if edit_target != "— Create new brand —" else {}
+
+        with st.form("brand_form"):
+            name = st.text_input("Brand / Client Name *", value=existing.get("name", ""))
+            st.markdown("---")
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                colors = st.text_area("Brand Colours",
+                                      value=existing.get("colors", ""),
+                                      placeholder="e.g. Primary: #FF6B35, Secondary: #FFFFFF, Accent: #1A1A2E",
+                                      height=80)
+                fonts  = st.text_area("Fonts / Typography",
+                                      value=existing.get("fonts", ""),
+                                      placeholder="e.g. Headings: Montserrat Bold, Body: Open Sans Regular",
+                                      height=80)
+                tone   = st.text_area("Tone of Voice",
+                                      value=existing.get("tone", ""),
+                                      placeholder="e.g. Confident, conversational, no jargon, aspirational",
+                                      height=80)
+            with col_b:
+                dos    = st.text_area("Brand Dos ✅",
+                                      value=existing.get("dos", ""),
+                                      placeholder="e.g. Use lifestyle imagery, always show product in use, use white backgrounds",
+                                      height=80)
+                donts  = st.text_area("Brand Don'ts 🚫",
+                                      value=existing.get("donts", ""),
+                                      placeholder="e.g. No dark backgrounds, no stock photos, never use Comic Sans",
+                                      height=80)
+
+            guidelines = st.text_area(
+                "Additional Guidelines / Brand Notes",
+                value=existing.get("guidelines", ""),
+                placeholder="Paste brand brief, style guide notes, client requirements...",
+                height=120
+            )
+
+            # File upload for brand guidelines doc
+            uploaded_guide = st.file_uploader(
+                "Upload brand guidelines (PDF or TXT — text will be extracted)",
+                type=["txt", "pdf"],
+                help="Text files only for now. PDF text extraction requires additional setup."
+            )
+            if uploaded_guide:
+                if uploaded_guide.type == "text/plain":
+                    file_text = uploaded_guide.read().decode("utf-8", errors="ignore")
+                    guidelines = (guidelines + "\n\n" + file_text).strip()
+                    st.success(f"✅ Text extracted from {uploaded_guide.name}")
+                else:
+                    st.info("ℹ️ PDF upload noted — paste the key guidelines as text above for best results.")
+
+            submitted = st.form_submit_button("💾 Save Brand", type="primary", use_container_width=True)
+            if submitted:
+                if not name.strip():
+                    st.error("Brand name is required.")
+                else:
+                    brands[name.strip()] = {
+                        "name":       name.strip(),
+                        "colors":     colors,
+                        "fonts":      fonts,
+                        "tone":       tone,
+                        "dos":        dos,
+                        "donts":      donts,
+                        "guidelines": guidelines,
+                    }
+                    save_brands(brands)
+                    st.success(f"✅ Brand **{name}** saved!")
+                    st.rerun()
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    # Load API key from secrets
+    try:
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        st.error("❌ ANTHROPIC_API_KEY not found in Streamlit secrets.")
+        st.stop()
+
+    with st.sidebar:
+        st.markdown("# 📋 Ad Audit Agent")
+        page = st.radio("", ["🔍 Run Audit", "🎨 Brand DNA"], label_visibility="collapsed")
+        st.markdown("---")
+
+    if page == "🔍 Run Audit":
+        page_audit(api_key)
+    else:
+        page_brand_dna()
 
 
 if __name__ == "__main__":
