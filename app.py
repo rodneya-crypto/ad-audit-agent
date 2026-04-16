@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import re
 from io import BytesIO
 from PIL import Image
@@ -134,39 +133,33 @@ def parse_headlines(raw: str) -> list:
     lines = re.split(r'\n|;', raw)
     return [l.strip() for l in lines if l.strip()]
 
-def get_canva_preview(url):
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-    headers = {"User-Agent": ua}
+
+def get_canva_screenshot(url: str):
+    """Use Microlink API (free, no key needed) to render Canva page and return screenshot."""
     try:
-        # Try Canva oEmbed API first — works without JS rendering
-        oembed = requests.get(
-            "https://www.canva.com/api/oembed",
-            params={"url": url, "format": "json"},
-            headers=headers, timeout=12
-        )
-        if oembed.status_code == 200:
-            data = oembed.json()
-            thumb = data.get("thumbnail_url")
-            if thumb:
-                img_resp = requests.get(thumb, headers=headers, timeout=12)
+        api = "https://api.microlink.io"
+        params = {
+            "url": url,
+            "screenshot": "true",
+            "meta": "false",
+            "embed": "screenshot.url",
+            "waitForSelector": "canvas,img",  # wait for design to render
+            "deviceScaleFactor": "2",
+        }
+        resp = requests.get(api, params=params, timeout=40)
+        if resp.status_code == 200:
+            data = resp.json()
+            shot = data.get("data", {}).get("screenshot", {})
+            shot_url = shot.get("url") if isinstance(shot, dict) else None
+            if shot_url:
+                img_resp = requests.get(shot_url, timeout=20)
                 img_resp.raise_for_status()
                 return Image.open(BytesIO(img_resp.content)), None
-    except Exception:
-        pass
+            return None, "Microlink rendered the page but returned no screenshot URL."
+        return None, f"Microlink returned status {resp.status_code}."
+    except Exception as e:
+        return None, f"Screenshot service error: {e}"
 
-    try:
-        # Fallback: meta-tag scrape (may not work on JS-rendered pages)
-        resp = requests.get(url, headers=headers, timeout=12)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for prop in ["og:image", "twitter:image"]:
-            tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
-            if tag and tag.get("content"):
-                img_resp = requests.get(tag["content"], headers=headers, timeout=12)
-                return Image.open(BytesIO(img_resp.content)), None
-    except Exception:
-        pass
-
-    return None, "Canva preview couldn't be fetched (Canva requires a browser to render). Please upload the image using the tab below."
 
 def image_to_base64(img: Image.Image) -> str:
     buf = BytesIO()
@@ -505,14 +498,15 @@ def page_audit(api_key):
     st.markdown("---")
 
     # ── Step 1: Google Sheet ──────────────────────────────────────────────────
+    # ad_copy is set by either the sheet flow or left empty for creative-only
+    ad_copy = {"primary_text": "", "headlines": [], "descriptions": [], "final_url": ""}
+
     if audit_mode_key == "full":
         st.markdown("### 📊 Step 1 — Ad Copy (Google Sheet)")
-        sheet_url = st.text_input("Google Sheet URL (must be public)",
+        sheet_url = st.text_input("Google Sheet URL (must be public — paste the tab link you want to scan)",
                                   placeholder="https://docs.google.com/spreadsheets/d/...")
 
-        df        = None
-        ad_copy   = {"primary_text": "", "headlines": [], "descriptions": [], "final_url": ""}
-        row_index = 0
+        df = None
 
         if sheet_url:
             with st.spinner("Reading sheet..."):
@@ -520,22 +514,8 @@ def page_audit(api_key):
             if err:
                 st.error(f"❌ {err}")
             elif df is not None:
-                st.success(f"✅ Sheet loaded — {len(df)} row(s) found")
 
-                # Row selector — use first non-empty cell for label
-                def _row_label(i):
-                    row = df.iloc[i]
-                    first_val = next((str(v)[:80] for v in row if str(v) not in ("", "nan", "NaN")), f"Row {i+1}")
-                    return f"Row {i+1}: {first_val}"
-
-                if len(df) > 1:
-                    row_index = st.selectbox(
-                        "Which row to audit?",
-                        range(len(df)),
-                        format_func=_row_label
-                    )
-
-                # Column mapper with auto-detection
+                # ── Column auto-detection ─────────────────────────────────
                 def _find_col(df_cols, keywords):
                     for col in df_cols:
                         cl = col.lower()
@@ -550,85 +530,112 @@ def page_audit(api_key):
                 auto_url  = _find_col(real_cols, ["url", "link", "destination"])
 
                 NONE_OPT = "— not in sheet —"
-                cols = [NONE_OPT] + real_cols
+                cols_opts = [NONE_OPT] + real_cols
 
                 def _idx(auto):
-                    return cols.index(auto) if auto and auto in cols else 0
+                    return cols_opts.index(auto) if auto and auto in cols_opts else 0
 
-                st.markdown("**Map your columns** *(auto-detected — adjust if needed)*:")
-                cm1, cm2, cm3, cm4 = st.columns(4)
-                with cm1:
-                    pt_col  = st.selectbox("Primary Text",  cols, index=_idx(auto_pt))
-                with cm2:
-                    hl_col  = st.selectbox("Headlines",     cols, index=_idx(auto_hl))
-                with cm3:
-                    desc_col= st.selectbox("Descriptions",  cols, index=_idx(auto_desc))
-                with cm4:
-                    url_col = st.selectbox("Final URL",     cols, index=_idx(auto_url))
+                with st.expander("⚙️ Column mapping (auto-detected — expand to adjust)", expanded=False):
+                    cm1, cm2, cm3, cm4 = st.columns(4)
+                    with cm1:
+                        pt_col   = st.selectbox("Primary Text",  cols_opts, index=_idx(auto_pt),  key="pt_col")
+                    with cm2:
+                        hl_col   = st.selectbox("Headlines",     cols_opts, index=_idx(auto_hl),  key="hl_col")
+                    with cm3:
+                        desc_col = st.selectbox("Descriptions",  cols_opts, index=_idx(auto_desc),key="desc_col")
+                    with cm4:
+                        url_col  = st.selectbox("Final URL",     cols_opts, index=_idx(auto_url), key="url_col")
 
-                row = df.iloc[row_index]
+                # ── Parse all rows into ad_copy dicts ─────────────────────
+                def _parse_row(row):
+                    pt  = str(row[pt_col])   if pt_col   != NONE_OPT else ""
+                    hl  = str(row[hl_col])   if hl_col   != NONE_OPT else ""
+                    dc  = str(row[desc_col]) if desc_col != NONE_OPT else ""
+                    url = str(row[url_col])  if url_col  != NONE_OPT else ""
+                    return {
+                        "primary_text": pt  if pt  not in ("", "nan") else "",
+                        "headlines":    parse_headlines(hl),
+                        "descriptions": parse_headlines(dc),
+                        "final_url":    url if url not in ("", "nan") else "",
+                    }
 
-                primary_text = str(row[pt_col])   if pt_col  != "— not in sheet —" else ""
-                headlines_raw= str(row[hl_col])   if hl_col  != "— not in sheet —" else ""
-                desc_raw     = str(row[desc_col]) if desc_col!= "— not in sheet —" else ""
-                final_url    = str(row[url_col])  if url_col != "— not in sheet —" else ""
+                all_ads = [_parse_row(df.iloc[i]) for i in range(len(df))]
 
-                headlines    = parse_headlines(headlines_raw)
-                descriptions = parse_headlines(desc_raw)
+                st.markdown(f"**{len(all_ads)} ad(s) found — select one to audit:**")
+                st.markdown("<br>", unsafe_allow_html=True)
 
-                ad_copy = {
-                    "primary_text": primary_text if primary_text not in ("", "nan") else "",
-                    "headlines":    headlines,
-                    "descriptions": descriptions,
-                    "final_url":    final_url if final_url not in ("", "nan") else "",
-                }
+                for i, ac in enumerate(all_ads):
+                    # Build a one-line label from first non-empty field
+                    preview_label = (
+                        ac["primary_text"][:60]
+                        or (ac["headlines"][0][:60] if ac["headlines"] else "")
+                        or f"Row {i+1}"
+                    )
+                    with st.expander(f"📄 Ad {i+1} — {preview_label}{'…' if len(preview_label)==60 else ''}", expanded=(i==0)):
+                        st.markdown('<div class="copy-preview">', unsafe_allow_html=True)
+                        if ac["primary_text"]:
+                            st.markdown('<div class="copy-label">Primary Text</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="copy-value">{ac["primary_text"]}</div>', unsafe_allow_html=True)
+                        if ac["headlines"]:
+                            st.markdown('<div class="copy-label" style="margin-top:12px">Headlines</div>', unsafe_allow_html=True)
+                            for h in ac["headlines"]:
+                                st.markdown(f'<div class="headline-item">📌 {h}</div>', unsafe_allow_html=True)
+                        if ac["descriptions"]:
+                            st.markdown('<div class="copy-label" style="margin-top:12px">Descriptions</div>', unsafe_allow_html=True)
+                            for d in ac["descriptions"]:
+                                st.markdown(f'<div class="headline-item">📝 {d}</div>', unsafe_allow_html=True)
+                        if ac["final_url"]:
+                            st.markdown(f'<div class="copy-label" style="margin-top:12px">Final URL</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="copy-value">🔗 {ac["final_url"]}</div>', unsafe_allow_html=True)
+                        st.markdown('</div>', unsafe_allow_html=True)
 
-                # Preview
-                st.markdown("**Ad Copy Preview:**")
-                with st.container():
-                    st.markdown('<div class="copy-preview">', unsafe_allow_html=True)
-                    if ad_copy["primary_text"]:
-                        st.markdown('<div class="copy-label">Primary Text</div>', unsafe_allow_html=True)
-                        st.markdown(f'<div class="copy-value">{ad_copy["primary_text"]}</div>', unsafe_allow_html=True)
-                    if ad_copy["headlines"]:
-                        st.markdown('<div class="copy-label" style="margin-top:12px">Headlines</div>', unsafe_allow_html=True)
-                        for h in ad_copy["headlines"]:
-                            st.markdown(f'<div class="headline-item">📌 {h}</div>', unsafe_allow_html=True)
-                    if ad_copy["descriptions"]:
-                        st.markdown('<div class="copy-label" style="margin-top:12px">Descriptions</div>', unsafe_allow_html=True)
-                        for d in ad_copy["descriptions"]:
-                            st.markdown(f'<div class="headline-item">📝 {d}</div>', unsafe_allow_html=True)
-                    if ad_copy["final_url"]:
-                        st.markdown(f'<div class="copy-label" style="margin-top:12px">Final URL</div>', unsafe_allow_html=True)
-                        st.markdown(f'<div class="copy-value">🔗 {ad_copy["final_url"]}</div>', unsafe_allow_html=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
+                        if st.button(f"⚡ Select Ad {i+1} for Audit", key=f"sel_{i}", use_container_width=True):
+                            st.session_state["selected_ad_copy"] = ac
+                            st.rerun()
+
+                # Use session-state selected ad, or default to first row
+                if "selected_ad_copy" in st.session_state:
+                    ad_copy = st.session_state["selected_ad_copy"]
+                    st.success(f"✅ Ad selected — ready to audit below.")
+                elif all_ads:
+                    ad_copy = all_ads[0]
     else:
-        ad_copy = {"primary_text": "", "headlines": [], "descriptions": [], "final_url": ""}
         st.info("ℹ️ Creative-Only mode — no ad copy needed.")
 
     st.markdown("---")
 
     # ── Step 2: Creative ──────────────────────────────────────────────────────
-    st.markdown("### 🎨 Step 2 — Creative (Image or Video)")
+    st.markdown("### 🎨 Step 2 — Creative")
 
-    canva_url   = st.text_input("Canva Share Link (optional)",
-                                placeholder="https://www.canva.com/design/...")
+    canva_url = st.text_input("Canva Share Link (paste link → auto-screenshot)",
+                              placeholder="https://www.canva.com/design/...")
+
     creative_image = None
     is_video       = False
 
+    # Auto-screenshot from Canva link via Microlink
     if canva_url:
-        with st.spinner("Trying to fetch Canva preview..."):
-            creative_image, err = get_canva_preview(canva_url)
-        if err:
-            st.warning(f"⚠️ Could not auto-fetch: {err}")
-        else:
-            st.success("✅ Canva preview loaded")
+        # Only re-fetch if the URL changed
+        if st.session_state.get("canva_fetched_url") != canva_url:
+            with st.spinner("📸 Capturing Canva screenshot (10–30 sec)..."):
+                img, err = get_canva_screenshot(canva_url)
+            if img:
+                st.session_state["canva_img"] = img
+                st.session_state["canva_fetched_url"] = canva_url
+                st.success("✅ Canva creative captured automatically!")
+            else:
+                st.session_state["canva_img"] = None
+                st.session_state["canva_fetched_url"] = canva_url
+                st.warning(f"⚠️ Auto-capture failed ({err}) — upload manually below.")
 
-    st.markdown("**Upload creative file** (required if Canva auto-fetch fails):")
+        if st.session_state.get("canva_img"):
+            creative_image = st.session_state["canva_img"]
+
+    st.markdown("**Or upload manually** (use if Canva auto-capture fails):")
     tab_img, tab_vid = st.tabs(["🖼️ Static Image", "🎬 Video"])
 
     with tab_img:
-        uploaded_img = st.file_uploader("Upload image", type=["png", "jpg", "jpeg", "webp"],
+        uploaded_img = st.file_uploader("Upload image (PNG, JPG, WebP)", type=["png", "jpg", "jpeg", "webp"],
                                         key="img_upload", label_visibility="collapsed")
         if uploaded_img:
             creative_image = Image.open(uploaded_img)
@@ -636,25 +643,24 @@ def page_audit(api_key):
             st.success("✅ Image uploaded")
 
     with tab_vid:
-        uploaded_vid = st.file_uploader("Upload video thumbnail/frame", type=["png", "jpg", "jpeg"],
+        st.caption("Upload a screenshot or thumbnail of the first frame/hook of your video — Claude will score all video-specific criteria.")
+        uploaded_vid = st.file_uploader("Upload video thumbnail (PNG or JPG)", type=["png", "jpg", "jpeg"],
                                         key="vid_upload",
-                                        help="Upload a screenshot of the first 3 seconds of your video",
                                         label_visibility="collapsed")
-        st.caption("Upload a screenshot/thumbnail of the video — Claude will score video-specific criteria.")
         if uploaded_vid:
             creative_image = Image.open(uploaded_vid)
             is_video = True
             st.success("✅ Video thumbnail uploaded — video audit mode active")
 
     if creative_image:
-        st.image(creative_image, caption="Creative Preview", use_column_width=True)
+        st.image(creative_image, caption="Creative Preview", use_container_width=True)
 
     st.markdown("---")
 
     # ── Run Audit ─────────────────────────────────────────────────────────────
     can_audit = bool(creative_image or canva_url)
     if not can_audit:
-        st.info("Upload a creative or paste a Canva link to run the audit.")
+        st.info("Paste a Canva link or upload a creative to run the audit.")
 
     if can_audit:
         if st.button("⚡ Run Audit", type="primary", use_container_width=True):
