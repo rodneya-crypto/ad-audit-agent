@@ -533,13 +533,7 @@ def page_audit(api_key):
                 if _cutoff < len(df):
                     df = df.iloc[:_cutoff].reset_index(drop=True)
 
-                # Column helpers
-                def _find_col(df_cols, keywords):
-                    for col in df_cols:
-                        if any(kw in col.lower() for kw in keywords):
-                            return col
-                    return None
-
+                # ── Column analysis helpers ───────────────────────────────
                 def _find_merged_siblings(df_cols, anchor_col):
                     if anchor_col is None:
                         return []
@@ -555,50 +549,73 @@ def page_audit(api_key):
                             break
                     return siblings
 
-                real_cols = list(df.columns)
-                auto_pt   = _find_col(real_cols, ["primary text", "primary", "ad copy", "body"])
-                auto_hl   = _find_col(real_cols, ["headline", "heading", "title"])
-                auto_desc = _find_col(real_cols, ["description", "desc"])
-                auto_url  = _find_col(real_cols, ["url", "link", "destination"])
+                def _col_avg_len(col):
+                    vals = [str(v).strip() for v in df[col] if str(v).strip() not in ("", "nan", "NaN")]
+                    return sum(len(v) for v in vals) / len(vals) if vals else 0
 
-                pt_siblings = _find_merged_siblings(real_cols, auto_pt)
-                _pt_default = [c for c in ([auto_pt] + pt_siblings) if c in real_cols]
+                def _col_sample(col):
+                    for v in df[col]:
+                        s = str(v).strip()
+                        if s and s not in ("nan", "NaN"):
+                            return (s[:65] + "…") if len(s) > 65 else s
+                    return ""
+
+                def _find_col_keyword(df_cols, keywords):
+                    for col in df_cols:
+                        if any(kw in col.lower() for kw in keywords):
+                            return col
+                    return None
+
+                def _find_primary_text_col(df_cols):
+                    """Find the best primary-text column by content length, not just header name.
+                    Among keyword-matched columns + their merged siblings, prefer the one
+                    with the longest average content (actual copy, not labels)."""
+                    anchor = _find_col_keyword(df_cols, ["primary text", "primary", "ad copy", "body"])
+                    candidates = ([anchor] + _find_merged_siblings(df_cols, anchor)) if anchor else df_cols[:]
+                    scored = [(c, _col_avg_len(c)) for c in candidates if _col_avg_len(c) > 0]
+                    return max(scored, key=lambda x: x[1])[0] if scored else anchor
+
+                real_cols = list(df.columns)
+                auto_pt   = _find_primary_text_col(real_cols)
+                auto_hl   = _find_col_keyword(real_cols, ["headline", "heading", "title"])
+                auto_desc = _find_col_keyword(real_cols, ["description", "desc"])
+                auto_url  = _find_col_keyword(real_cols, ["url", "link", "destination"])
 
                 NONE_OPT  = "— not in sheet —"
                 cols_opts = [NONE_OPT] + real_cols
 
-                def _idx(auto):
-                    return cols_opts.index(auto) if auto and auto in cols_opts else 0
+                def _idx(col):
+                    return cols_opts.index(col) if col and col in cols_opts else 0
+
+                def _fmt_col(col):
+                    if col == NONE_OPT:
+                        return NONE_OPT
+                    sample = _col_sample(col)
+                    return f'{col}  →  "{sample}"' if sample else col
 
                 with st.expander("⚙️ Column mapping (auto-detected — expand to adjust)", expanded=False):
-                    pt_cols = st.multiselect(
-                        "Primary Text column(s)",
-                        real_cols,
-                        default=_pt_default,
-                        key="pt_cols",
-                        help="Select every column that contains ad copy. Merged-header siblings are auto-added."
-                    )
-                    if pt_siblings:
-                        st.caption("Merged header detected — sibling columns auto-included above.")
-                    _c2, _c3, _c4 = st.columns(3)
-                    with _c2:
-                        hl_col   = st.selectbox("Headlines",    cols_opts, index=_idx(auto_hl),   key="hl_col")
-                    with _c3:
-                        desc_col = st.selectbox("Descriptions", cols_opts, index=_idx(auto_desc), key="desc_col")
-                    with _c4:
-                        url_col  = st.selectbox("Final URL",    cols_opts, index=_idx(auto_url),  key="url_col")
+                    _ca, _cb = st.columns(2)
+                    with _ca:
+                        pt_col   = st.selectbox("Primary Text", cols_opts, index=_idx(auto_pt),
+                                                key="pt_col",   format_func=_fmt_col)
+                    with _cb:
+                        hl_col   = st.selectbox("Headlines",    cols_opts, index=_idx(auto_hl),
+                                                key="hl_col",   format_func=_fmt_col)
+                    _cc, _cd = st.columns(2)
+                    with _cc:
+                        desc_col = st.selectbox("Descriptions", cols_opts, index=_idx(auto_desc),
+                                                key="desc_col", format_func=_fmt_col)
+                    with _cd:
+                        url_col  = st.selectbox("Final URL",    cols_opts, index=_idx(auto_url),
+                                                key="url_col",  format_func=_fmt_col)
 
                 def _parse_row(row):
-                    if pt_cols:
-                        pt_parts = [str(row[c]) for c in pt_cols if str(row[c]) not in ("", "nan", "NaN")]
-                        pt = "\n".join(pt_parts)
-                    else:
-                        pt = ""
+                    pt  = str(row[pt_col])   if pt_col   != NONE_OPT else ""
                     hl  = str(row[hl_col])   if hl_col   != NONE_OPT else ""
                     dc  = str(row[desc_col]) if desc_col != NONE_OPT else ""
                     url = str(row[url_col])  if url_col  != NONE_OPT else ""
                     return {
-                        "primary_text": pt,
+                        "primary_text": pt  if pt  not in ("", "nan", "NaN") else "",
                         "headlines":    parse_headlines(hl),
                         "descriptions": parse_headlines(dc),
                         "final_url":    url if url not in ("", "nan", "NaN") else "",
@@ -645,8 +662,6 @@ def page_audit(api_key):
                             "#":            i + 1,
                             "Primary Text": ac["primary_text"],
                             "Headlines":    hl_str,
-                            "Descriptions": " | ".join(ac["descriptions"][:2]),
-                            "URL":          ac["final_url"],
                         })
                     _display_df = pd.DataFrame(_rows)
 
@@ -657,10 +672,8 @@ def page_audit(api_key):
                             "#":            st.column_config.NumberColumn("#", width="small"),
                             "Primary Text": st.column_config.TextColumn("Primary Text", width="large"),
                             "Headlines":    st.column_config.TextColumn("Headlines",    width="medium"),
-                            "Descriptions": st.column_config.TextColumn("Descriptions", width="medium"),
-                            "URL":          st.column_config.TextColumn("URL",          width="small"),
                         },
-                        disabled=["#", "Primary Text", "Headlines", "Descriptions", "URL"],
+                        disabled=["#", "Primary Text", "Headlines"],
                         hide_index=True,
                         use_container_width=True,
                         height=min(500, 45 * len(all_ads) + 55),
@@ -686,9 +699,7 @@ def page_audit(api_key):
     if "pasted_image_hashes" not in st.session_state:
         st.session_state["pasted_image_hashes"] = []
 
-    is_video        = False
     uploaded_images = []
-    video_thumbnail = None
 
     left_col, right_col = st.columns(2)
 
@@ -744,7 +755,7 @@ def page_audit(api_key):
 
     with right_col:
         # ── File upload ───────────────────────────────────────────────────
-        st.markdown("**Option C — Upload Image(s)**")
+        st.markdown("**Option B — Upload Image(s)**")
         uploaded_files = st.file_uploader(
             "upload_images",
             type=["png", "jpg", "jpeg", "webp"],
@@ -756,30 +767,12 @@ def page_audit(api_key):
             uploaded_images = [Image.open(f) for f in uploaded_files]
             st.success(f"✅ {len(uploaded_images)} image(s) ready")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # ── Video thumbnail ───────────────────────────────────────────────
-        st.markdown("**Option D — Video Thumbnail** *(for video ads)*")
-        st.caption("Upload a screenshot of the first frame — Claude scores all video criteria.")
-        uploaded_vid = st.file_uploader(
-            "video_thumb",
-            type=["png", "jpg", "jpeg"],
-            key="vid_upload",
-            label_visibility="collapsed",
-        )
-        if uploaded_vid:
-            video_thumbnail = Image.open(uploaded_vid)
-            is_video = True
-            st.success("✅ Video thumbnail loaded")
-
     # Combine all image sources
     all_creative_images = []
     if st.session_state.get("canva_img"):
         all_creative_images.append(st.session_state["canva_img"])
     all_creative_images.extend(st.session_state.get("pasted_images", []))
     all_creative_images.extend(uploaded_images)
-    if video_thumbnail:
-        all_creative_images.append(video_thumbnail)
 
     if all_creative_images:
         st.markdown("**Creative Preview**")
@@ -813,7 +806,7 @@ def page_audit(api_key):
                 try:
                     res = run_audit(
                         api_key, account_type, platform, audit_mode_key,
-                        ac, all_creative_images, canva_url or "", is_video, selected_brand
+                        ac, all_creative_images, canva_url or "", False, selected_brand
                     )
                     all_results.append({"ad_copy": ac, "results": res})
                 except anthropic.AuthenticationError:
