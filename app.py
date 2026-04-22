@@ -480,47 +480,49 @@ def page_audit(api_key):
 
     brands = load_brands()
 
-    # ── Sidebar controls ──────────────────────────────────────────────────────
+    # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("## ⚙️ Audit Settings")
-        platform     = st.selectbox("Ad Platform", ["Meta Ads", "Google Ads"])
+        st.markdown("## ⚙️ Settings")
+        platform     = st.selectbox("Platform", ["Meta Ads", "Google Ads"])
         account_type = st.selectbox("Account Type", ["Ecommerce", "Lead Gen"])
-        audit_mode   = st.radio("Audit Mode", ["Full Audit", "Creative Only"],
-                                help="Full Audit scores copy + creative. Creative Only scores the image/video only.")
+        audit_mode   = st.radio(
+            "Audit Mode", ["Full Audit", "Creative Only"],
+            help="Full Audit scores copy + creative. Creative Only scores the image/video only."
+        )
         audit_mode_key = "full" if audit_mode == "Full Audit" else "creative"
 
         st.markdown("---")
-        st.markdown("**Brand / Client**")
         brand_options = ["None (no brand guidelines)"] + list(brands.keys())
-        selected_brand_name = st.selectbox("Apply brand guidelines", brand_options)
+        selected_brand_name = st.selectbox("Brand / Client", brand_options)
         selected_brand = brands.get(selected_brand_name) if selected_brand_name != "None (no brand guidelines)" else None
         if selected_brand:
-            st.caption(f"✅ Brand DNA loaded: **{selected_brand_name}**")
+            st.caption(f"✅ **{selected_brand_name}** loaded")
 
         st.markdown("---")
         st.caption("Matriarch Digital — Ad Creative Audit Agent")
 
     st.markdown("---")
 
-    # ── Step 1: Google Sheet ──────────────────────────────────────────────────
-    # ad_copy is set by either the sheet flow or left empty for creative-only
-    ad_copy = {"primary_text": "", "headlines": [], "descriptions": [], "final_url": ""}
+    # ─── Step 1: Ad Copy ──────────────────────────────────────────────────────
+    selected_ads = []
+    canva_url    = ""
 
     if audit_mode_key == "full":
-        st.markdown("### 📊 Step 1 — Ad Copy (Google Sheet)")
-        sheet_url = st.text_input("Google Sheet URL (must be public — paste the tab link you want to scan)",
-                                  placeholder="https://docs.google.com/spreadsheets/d/...")
-
-        df = None
+        st.markdown("### 📊 Step 1 — Ad Copy")
+        sheet_url = st.text_input(
+            "Google Sheet URL",
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            help="Sheet must be shared as 'Anyone with the link can view'. Paste the specific tab link."
+        )
 
         if sheet_url:
-            with st.spinner("Reading sheet..."):
+            with st.spinner("Loading sheet..."):
                 df, err = read_public_sheet(sheet_url)
             if err:
                 st.error(f"❌ {err}")
             elif df is not None:
 
-                # ── Sentinel: drop everything from "Meta Ads Copy & Creative Checklist" row onward
+                # Truncate at sentinel row
                 _sentinel_kws = ["meta ads copy", "creative checklist"]
                 _cutoff = len(df)
                 for _ri in range(len(df)):
@@ -531,16 +533,14 @@ def page_audit(api_key):
                 if _cutoff < len(df):
                     df = df.iloc[:_cutoff].reset_index(drop=True)
 
-                # ── Column auto-detection ─────────────────────────────────
+                # Column helpers
                 def _find_col(df_cols, keywords):
                     for col in df_cols:
-                        cl = col.lower()
-                        if any(kw in cl for kw in keywords):
+                        if any(kw in col.lower() for kw in keywords):
                             return col
                     return None
 
                 def _find_merged_siblings(df_cols, anchor_col):
-                    """Return Unnamed: N columns immediately following anchor_col (merged cell children)."""
                     if anchor_col is None:
                         return []
                     try:
@@ -561,40 +561,36 @@ def page_audit(api_key):
                 auto_desc = _find_col(real_cols, ["description", "desc"])
                 auto_url  = _find_col(real_cols, ["url", "link", "destination"])
 
-                # Detect columns under a merged "Primary Ad Text / Ad Copy" header
                 pt_siblings = _find_merged_siblings(real_cols, auto_pt)
-                # Default primary text columns = anchor + any merged siblings
                 _pt_default = [c for c in ([auto_pt] + pt_siblings) if c in real_cols]
 
-                NONE_OPT = "— not in sheet —"
+                NONE_OPT  = "— not in sheet —"
                 cols_opts = [NONE_OPT] + real_cols
 
                 def _idx(auto):
                     return cols_opts.index(auto) if auto and auto in cols_opts else 0
 
                 with st.expander("⚙️ Column mapping (auto-detected — expand to adjust)", expanded=False):
-                    # Primary Text uses multiselect so merged siblings appear immediately
                     pt_cols = st.multiselect(
-                        "Primary Text column(s) — select all columns under a merged header",
+                        "Primary Text column(s)",
                         real_cols,
                         default=_pt_default,
                         key="pt_cols",
+                        help="Select every column that contains ad copy. Merged-header siblings are auto-added."
                     )
                     if pt_siblings:
-                        st.caption(f"Merged header detected — sibling columns auto-added above. Add or remove as needed.")
-                    cm2, cm3, cm4 = st.columns(3)
-                    with cm2:
-                        hl_col   = st.selectbox("Headlines",     cols_opts, index=_idx(auto_hl),  key="hl_col")
-                    with cm3:
-                        desc_col = st.selectbox("Descriptions",  cols_opts, index=_idx(auto_desc),key="desc_col")
-                    with cm4:
-                        url_col  = st.selectbox("Final URL",     cols_opts, index=_idx(auto_url), key="url_col")
+                        st.caption("Merged header detected — sibling columns auto-included above.")
+                    _c2, _c3, _c4 = st.columns(3)
+                    with _c2:
+                        hl_col   = st.selectbox("Headlines",    cols_opts, index=_idx(auto_hl),   key="hl_col")
+                    with _c3:
+                        desc_col = st.selectbox("Descriptions", cols_opts, index=_idx(auto_desc), key="desc_col")
+                    with _c4:
+                        url_col  = st.selectbox("Final URL",    cols_opts, index=_idx(auto_url),  key="url_col")
 
-                # ── Parse all rows, skip empty + checklist-only rows ──────
                 def _parse_row(row):
                     if pt_cols:
-                        pt_parts = [str(row[c]) for c in pt_cols
-                                    if str(row[c]) not in ("", "nan", "NaN")]
+                        pt_parts = [str(row[c]) for c in pt_cols if str(row[c]) not in ("", "nan", "NaN")]
                         pt = "\n".join(pt_parts)
                     else:
                         pt = ""
@@ -609,31 +605,23 @@ def page_audit(api_key):
                     }
 
                 def _has_content(ac):
-                    return bool(
-                        ac["primary_text"] or ac["headlines"] or
-                        ac["descriptions"] or ac["final_url"]
-                    )
+                    return bool(ac["primary_text"] or ac["headlines"] or ac["descriptions"] or ac["final_url"])
 
-                # Build a set of known checklist strings to exclude from ad choices
                 _checklist_strings = set()
                 for _ci in FULL_CHECKLIST:
-                    _checklist_strings.add(_ci["section"].lower().strip())
-                    _checklist_strings.add(_ci["label"].lower().strip())
-                    _checklist_strings.add(_ci["id"].lower().strip())
-                    _checklist_strings.add(_ci["desc"].lower().strip())
+                    _checklist_strings.update({
+                        _ci["section"].lower().strip(), _ci["label"].lower().strip(),
+                        _ci["id"].lower().strip(),      _ci["desc"].lower().strip(),
+                    })
 
                 def _is_checklist_row(ac):
                     pt = ac["primary_text"].strip()
                     if not pt:
                         return False
-                    pt_lower = pt.lower()
-                    # Exact match against known checklist labels / IDs / sections
-                    if pt_lower in _checklist_strings:
+                    if pt.lower() in _checklist_strings:
                         return True
-                    # Looks like a numbered section header e.g. "1. Hook Strength"
                     if re.match(r'^\d+[a-z]?\.\s+', pt):
                         return True
-                    # Very short text with no other fields — likely a row label/divider
                     if len(pt) < 30 and not ac["headlines"] and not ac["descriptions"] and not ac["final_url"]:
                         return True
                     return False
@@ -642,121 +630,94 @@ def page_audit(api_key):
                 all_ads = [ac for ac in all_ads if _has_content(ac) and not _is_checklist_row(ac)]
 
                 if not all_ads:
-                    st.warning("No ad rows found after filtering. Check that your column mapping is correct.")
+                    st.warning("No ad rows found. Check column mapping above.")
                 else:
-                    n_ads = len(all_ads)
+                    st.markdown(f"**{len(all_ads)} ad row(s) found** — check the box next to each one you want to audit:")
 
-                    # ── Select All / Clear All controls ───────────────────
-                    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 4])
-                    with ctrl1:
-                        if st.button("✅ Select All", key="sel_all", use_container_width=True):
-                            for j in range(n_ads):
-                                st.session_state[f"chk_{j}"] = True
-                            st.rerun()
-                    with ctrl2:
-                        if st.button("☐ Clear All", key="clr_all", use_container_width=True):
-                            for j in range(n_ads):
-                                st.session_state[f"chk_{j}"] = False
-                            st.rerun()
-                    with ctrl3:
-                        n_selected = sum(1 for j in range(n_ads) if st.session_state.get(f"chk_{j}", False))
-                        if n_selected:
-                            st.markdown(f"<div style='padding-top:6px;color:#22c55e;font-weight:700'>"
-                                        f"✅ {n_selected} of {n_ads} selected</div>", unsafe_allow_html=True)
-                        else:
-                            st.markdown(f"<div style='padding-top:6px;color:#94a3b8'>"
-                                        f"{n_ads} ad(s) found — select the ones to audit</div>", unsafe_allow_html=True)
+                    # ── Full-preview data table with Select checkboxes ────
+                    _rows = []
+                    for i, ac in enumerate(all_ads):
+                        hl_str = " | ".join(ac["headlines"][:3])
+                        if len(ac["headlines"]) > 3:
+                            hl_str += f" +{len(ac['headlines'])-3} more"
+                        _rows.append({
+                            "Select":       False,
+                            "#":            i + 1,
+                            "Primary Text": ac["primary_text"],
+                            "Headlines":    hl_str,
+                            "Descriptions": " | ".join(ac["descriptions"][:2]),
+                            "URL":          ac["final_url"],
+                        })
+                    _display_df = pd.DataFrame(_rows)
 
-                    st.markdown("<br>", unsafe_allow_html=True)
+                    _edited = st.data_editor(
+                        _display_df,
+                        column_config={
+                            "Select":       st.column_config.CheckboxColumn("✓", width="small"),
+                            "#":            st.column_config.NumberColumn("#", width="small"),
+                            "Primary Text": st.column_config.TextColumn("Primary Text", width="large"),
+                            "Headlines":    st.column_config.TextColumn("Headlines",    width="medium"),
+                            "Descriptions": st.column_config.TextColumn("Descriptions", width="medium"),
+                            "URL":          st.column_config.TextColumn("URL",          width="small"),
+                        },
+                        disabled=["#", "Primary Text", "Headlines", "Descriptions", "URL"],
+                        hide_index=True,
+                        use_container_width=True,
+                        height=min(500, 45 * len(all_ads) + 55),
+                        key="ad_selector_editor",
+                    )
 
-                    # ── Card grid (2 columns) ─────────────────────────────
-                    selected_ads = []
-                    for row_start in range(0, n_ads, 2):
-                        card_cols = st.columns(2)
-                        for col_idx in range(2):
-                            i = row_start + col_idx
-                            if i >= n_ads:
-                                break
-                            ac = all_ads[i]
-                            is_checked = st.session_state.get(f"chk_{i}", False)
+                    selected_ads = [all_ads[i] for i, row in _edited.iterrows() if row["Select"]]
+                    if selected_ads:
+                        st.success(f"✅ {len(selected_ads)} ad(s) selected for audit")
 
-                            pt_preview = ac["primary_text"][:150] + ("…" if len(ac["primary_text"]) > 150 else "")
-                            hl_preview = ""
-                            if ac["headlines"]:
-                                hl_preview = " · ".join(ac["headlines"][:2])
-                                if len(ac["headlines"]) > 2:
-                                    hl_preview += f" +{len(ac['headlines'])-2} more"
-                            meta_parts = []
-                            if ac["headlines"]:
-                                meta_parts.append(f"{len(ac['headlines'])} headline{'s' if len(ac['headlines'])>1 else ''}")
-                            if ac["descriptions"]:
-                                meta_parts.append(f"{len(ac['descriptions'])} desc")
-                            if ac["final_url"]:
-                                meta_parts.append("has URL")
-                            meta = " · ".join(meta_parts)
+        st.session_state["selected_ads"] = selected_ads
 
-                            with card_cols[col_idx]:
-                                with st.container(border=True):
-                                    hdr, chk = st.columns([5, 1])
-                                    with hdr:
-                                        st.markdown(f"**Ad {i+1}**" + (" ✅" if is_checked else ""))
-                                    with chk:
-                                        checked = st.checkbox("", key=f"chk_{i}",
-                                                              label_visibility="collapsed")
-                                    st.markdown(
-                                        pt_preview if pt_preview
-                                        else "_no primary text_",
-                                        help=ac["primary_text"] if len(ac["primary_text"]) > 150 else None
-                                    )
-                                    if hl_preview:
-                                        st.caption(hl_preview)
-                                    if meta:
-                                        st.caption(meta)
-                                if checked:
-                                    selected_ads.append(ac)
-
-                    st.session_state["selected_ads"] = selected_ads
     else:
-        st.info("ℹ️ Creative-Only mode — no ad copy needed. Just upload your creative below.")
+        st.info("ℹ️ Creative Only mode — no ad copy needed. Add your creative below.")
 
     st.markdown("---")
 
-    # ── Step 2: Creative ──────────────────────────────────────────────────────
+    # ─── Step 2: Creative ─────────────────────────────────────────────────────
     st.markdown("### 🎨 Step 2 — Creative")
 
-    canva_url = st.text_input("Canva Share Link (paste link → auto-screenshot)",
-                              placeholder="https://www.canva.com/design/...")
-
-    # Session state for accumulated pasted images
     if "pasted_images" not in st.session_state:
         st.session_state["pasted_images"] = []
     if "pasted_image_hashes" not in st.session_state:
         st.session_state["pasted_image_hashes"] = []
 
-    is_video       = False
+    is_video        = False
     uploaded_images = []
     video_thumbnail = None
 
-    # Auto-screenshot from Canva link via Microlink
-    if canva_url:
-        # Only re-fetch if the URL changed
-        if st.session_state.get("canva_fetched_url") != canva_url:
-            with st.spinner("📸 Capturing Canva screenshot (10–30 sec)..."):
-                img, err = get_canva_screenshot(canva_url)
-            if img:
-                st.session_state["canva_img"] = img
-                st.session_state["canva_fetched_url"] = canva_url
-                st.success("✅ Canva creative captured automatically!")
-            else:
-                st.session_state["canva_img"] = None
-                st.session_state["canva_fetched_url"] = canva_url
-                st.warning(f"⚠️ Auto-capture failed ({err}) — upload manually below.")
+    left_col, right_col = st.columns(2)
 
-    st.markdown("**Or upload / paste manually** (use if Canva auto-capture fails):")
-    tab_paste, tab_img, tab_vid = st.tabs(["📋 Paste from Clipboard", "🖼️ Static Image", "🎬 Video"])
+    with left_col:
+        # ── Canva link ────────────────────────────────────────────────────
+        st.markdown("**Option A — Canva Link** *(auto-screenshot)*")
+        canva_url = st.text_input(
+            "canva_link",
+            placeholder="https://www.canva.com/design/...",
+            label_visibility="collapsed",
+        )
+        if canva_url:
+            if st.session_state.get("canva_fetched_url") != canva_url:
+                with st.spinner("Capturing Canva screenshot (10–30 sec)..."):
+                    img, err = get_canva_screenshot(canva_url)
+                if img:
+                    st.session_state["canva_img"] = img
+                    st.session_state["canva_fetched_url"] = canva_url
+                    st.success("✅ Canva screenshot captured!")
+                else:
+                    st.session_state["canva_img"] = None
+                    st.session_state["canva_fetched_url"] = canva_url
+                    st.warning(f"⚠️ Auto-capture failed — upload manually. ({err})")
 
-    with tab_paste:
-        st.caption("Copy an image anywhere (screenshot, browser, Canva), then click the button. Each paste adds to your collection.")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Clipboard paste (outside any tab so it stays mounted) ─────────
+        st.markdown("**Option B — Paste from Clipboard**")
+        st.caption("① Copy an image (Ctrl+C / Cmd+C)  →  ② Click the button below  →  ③ Paste (Ctrl+V / Cmd+V)")
         paste_result = pbutton(
             label="📋 Paste Image",
             text_color="#ffffff",
@@ -772,34 +733,46 @@ def page_audit(api_key):
             if _hash not in st.session_state["pasted_image_hashes"]:
                 st.session_state["pasted_image_hashes"].append(_hash)
                 st.session_state["pasted_images"].append(paste_result.image_data)
-                is_video = False
-                st.success(f"✅ Image pasted — {len(st.session_state['pasted_images'])} in collection")
+                st.success(f"✅ Image added — {len(st.session_state['pasted_images'])} pasted so far")
         if st.session_state["pasted_images"]:
+            _np = len(st.session_state["pasted_images"])
+            st.caption(f"{_np} pasted image{'s' if _np > 1 else ''} in collection")
             if st.button("🗑️ Clear pasted images", key="clear_pasted"):
                 st.session_state["pasted_images"] = []
                 st.session_state["pasted_image_hashes"] = []
                 st.rerun()
 
-    with tab_img:
-        uploaded_files = st.file_uploader("Upload images (PNG, JPG, WebP)", type=["png", "jpg", "jpeg", "webp"],
-                                          key="img_upload", label_visibility="collapsed",
-                                          accept_multiple_files=True)
+    with right_col:
+        # ── File upload ───────────────────────────────────────────────────
+        st.markdown("**Option C — Upload Image(s)**")
+        uploaded_files = st.file_uploader(
+            "upload_images",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            key="img_upload",
+        )
         if uploaded_files:
             uploaded_images = [Image.open(f) for f in uploaded_files]
-            is_video = False
-            st.success(f"✅ {len(uploaded_images)} image(s) uploaded")
+            st.success(f"✅ {len(uploaded_images)} image(s) ready")
 
-    with tab_vid:
-        st.caption("Upload a screenshot or thumbnail of the first frame/hook of your video — Claude will score all video-specific criteria.")
-        uploaded_vid = st.file_uploader("Upload video thumbnail (PNG or JPG)", type=["png", "jpg", "jpeg"],
-                                        key="vid_upload",
-                                        label_visibility="collapsed")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Video thumbnail ───────────────────────────────────────────────
+        st.markdown("**Option D — Video Thumbnail** *(for video ads)*")
+        st.caption("Upload a screenshot of the first frame — Claude scores all video criteria.")
+        uploaded_vid = st.file_uploader(
+            "video_thumb",
+            type=["png", "jpg", "jpeg"],
+            key="vid_upload",
+            label_visibility="collapsed",
+        )
         if uploaded_vid:
             video_thumbnail = Image.open(uploaded_vid)
             is_video = True
-            st.success("✅ Video thumbnail uploaded — video audit mode active")
+            st.success("✅ Video thumbnail loaded")
 
-    # Combine all images from every source
+    # Combine all image sources
     all_creative_images = []
     if st.session_state.get("canva_img"):
         all_creative_images.append(st.session_state["canva_img"])
@@ -809,34 +782,34 @@ def page_audit(api_key):
         all_creative_images.append(video_thumbnail)
 
     if all_creative_images:
-        n_cols = min(len(all_creative_images), 4)
-        preview_cols = st.columns(n_cols)
+        st.markdown("**Creative Preview**")
+        n_prev = min(len(all_creative_images), 4)
+        prev_cols = st.columns(n_prev)
         for i, img in enumerate(all_creative_images):
-            with preview_cols[i % n_cols]:
-                st.image(img, caption=f"Image {i + 1}", width=200)
+            with prev_cols[i % n_prev]:
+                st.image(img, caption=f"Image {i + 1}", width=180)
 
     st.markdown("---")
 
-    # ── Run Audit ─────────────────────────────────────────────────────────────
+    # ─── Run Audit ────────────────────────────────────────────────────────────
     ads_to_audit = st.session_state.get("selected_ads", [])
-    # In creative-only mode there's no sheet, use a single empty ad_copy
     if audit_mode_key == "creative":
         ads_to_audit = [{"primary_text": "", "headlines": [], "descriptions": [], "final_url": ""}]
 
     can_audit = bool(all_creative_images or canva_url)
     if not can_audit:
-        st.info("Paste a Canva link or upload a creative to run the audit.")
+        st.info("Add a Canva link or upload a creative in Step 2 to enable the audit.")
     elif audit_mode_key == "full" and not ads_to_audit:
-        st.info("Tick at least one ad above to run the audit.")
+        st.info("Select at least one ad row in Step 1 to run the audit.")
 
     if can_audit and (audit_mode_key == "creative" or ads_to_audit):
         n = len(ads_to_audit)
-        btn_label = f"⚡ Run Audit ({n} ad{'s' if n > 1 else ''})" if n > 1 else "⚡ Run Audit"
+        btn_label = f"⚡ Run Audit — {n} Ad{'s' if n > 1 else ''}" if n > 1 else "⚡ Run Audit"
         if st.button(btn_label, type="primary", use_container_width=True):
             all_results = []
             progress = st.progress(0, text="Starting audit...")
             for idx, ac in enumerate(ads_to_audit):
-                progress.progress((idx) / n, text=f"Auditing ad {idx+1} of {n}...")
+                progress.progress(idx / n, text=f"Auditing ad {idx + 1} of {n}...")
                 try:
                     res = run_audit(
                         api_key, account_type, platform, audit_mode_key,
@@ -844,12 +817,12 @@ def page_audit(api_key):
                     )
                     all_results.append({"ad_copy": ac, "results": res})
                 except anthropic.AuthenticationError:
-                    st.error("❌ Invalid API key. Check Streamlit secrets → ANTHROPIC_API_KEY")
+                    st.error("❌ Invalid API key — check Streamlit secrets → ANTHROPIC_API_KEY")
                     break
                 except json.JSONDecodeError as e:
-                    st.error(f"❌ Ad {idx+1}: Unexpected response format. ({e})")
+                    st.error(f"❌ Ad {idx + 1}: Unexpected response format. ({e})")
                 except Exception as e:
-                    st.error(f"❌ Ad {idx+1}: {e}")
+                    st.error(f"❌ Ad {idx + 1}: {e}")
             progress.progress(1.0, text="Done!")
             if all_results:
                 st.session_state["all_results"]  = all_results
@@ -860,9 +833,9 @@ def page_audit(api_key):
                 st.session_state["brand_name"]   = selected_brand_name if selected_brand else ""
                 st.success(f"✅ Audit complete — {len(all_results)} ad(s) scored!")
 
-    # ── Results ───────────────────────────────────────────────────────────────
+    # ─── Results ──────────────────────────────────────────────────────────────
     if "all_results" in st.session_state:
-        all_results  = st.session_state["all_results"]
+        all_results    = st.session_state["all_results"]
         account_type_r = st.session_state.get("account_type", "")
         platform_r     = st.session_state.get("platform", "")
         audit_mode_r   = st.session_state.get("audit_mode", "full")
@@ -873,14 +846,14 @@ def page_audit(api_key):
         st.markdown(f"## Audit Results — {len(all_results)} Ad(s)")
 
         for idx, entry in enumerate(all_results):
-            ac  = entry["ad_copy"]
-            res = entry["results"]
+            ac    = entry["ad_copy"]
+            res   = entry["results"]
             label = (
                 ac.get("primary_text", "")[:50]
                 or (ac["headlines"][0][:50] if ac.get("headlines") else "")
-                or f"Ad {idx+1}"
+                or f"Ad {idx + 1}"
             )
-            with st.expander(f"📋 Ad {idx+1} — {label}", expanded=(idx == 0)):
+            with st.expander(f"📋 Ad {idx + 1} — {label}", expanded=(idx == 0)):
                 render_scorecard(res, account_type_r, platform_r, audit_mode_r)
                 st.markdown("---")
                 html = generate_html_report(
@@ -888,12 +861,12 @@ def page_audit(api_key):
                     ac, canva_url_r, brand_name_r,
                 )
                 st.download_button(
-                    f"⬇️ Download Report — Ad {idx+1}",
+                    f"⬇️ Download Report — Ad {idx + 1}",
                     data=html,
                     file_name=f"audit_ad{idx+1}_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
                     mime="text/html",
                     key=f"dl_{idx}",
-                    use_container_width=True
+                    use_container_width=True,
                 )
                 st.caption("Open in browser → File → Print → Save as PDF")
 
