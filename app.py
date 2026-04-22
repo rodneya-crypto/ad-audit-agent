@@ -520,6 +520,17 @@ def page_audit(api_key):
                 st.error(f"❌ {err}")
             elif df is not None:
 
+                # ── Sentinel: drop everything from "Meta Ads Copy & Creative Checklist" row onward
+                _sentinel_kws = ["meta ads copy", "creative checklist"]
+                _cutoff = len(df)
+                for _ri in range(len(df)):
+                    _row_text = " ".join(str(v).lower() for v in df.iloc[_ri].values)
+                    if all(kw in _row_text for kw in _sentinel_kws):
+                        _cutoff = _ri
+                        break
+                if _cutoff < len(df):
+                    df = df.iloc[:_cutoff].reset_index(drop=True)
+
                 # ── Column auto-detection ─────────────────────────────────
                 def _find_col(df_cols, keywords):
                     for col in df_cols:
@@ -668,20 +679,13 @@ def page_audit(api_key):
                                 break
                             ac = all_ads[i]
                             is_checked = st.session_state.get(f"chk_{i}", False)
-                            border = "#22c55e" if is_checked else "#e2e8f0"
-                            bg     = "#f0fdf4" if is_checked else "#f8fafc"
-                            badge_bg = "#22c55e" if is_checked else "#e2e8f0"
-                            badge_col = "#fff" if is_checked else "#64748b"
 
-                            pt_preview = ac["primary_text"][:130]
-                            if len(ac["primary_text"]) > 130:
-                                pt_preview += "…"
+                            pt_preview = ac["primary_text"][:150] + ("…" if len(ac["primary_text"]) > 150 else "")
                             hl_preview = ""
                             if ac["headlines"]:
                                 hl_preview = " · ".join(ac["headlines"][:2])
                                 if len(ac["headlines"]) > 2:
                                     hl_preview += f" +{len(ac['headlines'])-2} more"
-
                             meta_parts = []
                             if ac["headlines"]:
                                 meta_parts.append(f"{len(ac['headlines'])} headline{'s' if len(ac['headlines'])>1 else ''}")
@@ -692,28 +696,22 @@ def page_audit(api_key):
                             meta = " · ".join(meta_parts)
 
                             with card_cols[col_idx]:
-                                st.markdown(f"""
-                                <div style="border:2px solid {border};border-radius:12px;
-                                            padding:14px 16px;background:{bg};margin-bottom:2px;
-                                            min-height:140px">
-                                  <div style="display:flex;justify-content:space-between;
-                                              align-items:center;margin-bottom:8px">
-                                    <span style="font-weight:700;color:#1e293b;font-size:.95em">Ad {i+1}</span>
-                                    <span style="background:{badge_bg};color:{badge_col};
-                                                 font-size:.7em;font-weight:700;padding:2px 8px;
-                                                 border-radius:20px">
-                                      {'SELECTED' if is_checked else 'click to select'}
-                                    </span>
-                                  </div>
-                                  <div style="color:#334155;font-size:.88em;line-height:1.55;margin-bottom:8px">
-                                    {pt_preview or '<span style="color:#94a3b8;font-style:italic">(no primary text)</span>'}
-                                  </div>
-                                  {f'<div style="color:#64748b;font-size:.8em;line-height:1.4;margin-bottom:6px;font-style:italic">{hl_preview}</div>' if hl_preview else ''}
-                                  <div style="color:#94a3b8;font-size:.75em">{meta}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                checked = st.checkbox("Select for audit", key=f"chk_{i}",
-                                                      label_visibility="collapsed")
+                                with st.container(border=True):
+                                    hdr, chk = st.columns([5, 1])
+                                    with hdr:
+                                        st.markdown(f"**Ad {i+1}**" + (" ✅" if is_checked else ""))
+                                    with chk:
+                                        checked = st.checkbox("", key=f"chk_{i}",
+                                                              label_visibility="collapsed")
+                                    st.markdown(
+                                        pt_preview if pt_preview
+                                        else "_no primary text_",
+                                        help=ac["primary_text"] if len(ac["primary_text"]) > 150 else None
+                                    )
+                                    if hl_preview:
+                                        st.caption(hl_preview)
+                                    if meta:
+                                        st.caption(meta)
                                 if checked:
                                     selected_ads.append(ac)
 
