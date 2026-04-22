@@ -217,7 +217,7 @@ Be strict. 4 or 5 must be earned.
 For video items (video_hook, sound_off, pacing): if static image, score 0 with rationale "N/A — static image".
 Return ONLY valid JSON. No markdown fences. No text outside the JSON."""
 
-def build_user_message(ad_copy: dict, audit_mode: str, canva_url: str, has_image: bool, is_video: bool):
+def build_user_message(ad_copy: dict, audit_mode: str, canva_url: str, num_images: int, is_video: bool):
     copy_section = ""
     if audit_mode == "full":
         primary = ad_copy.get("primary_text", "")
@@ -236,8 +236,11 @@ def build_user_message(ad_copy: dict, audit_mode: str, canva_url: str, has_image
             copy_section += f"Final URL: {final_url}\n"
 
     creative_note = ""
-    if has_image and not is_video:
-        creative_note = "[Static image creative attached — analyse visually for all creative criteria.]"
+    if num_images > 0 and not is_video:
+        if num_images > 1:
+            creative_note = f"[{num_images} static image creatives attached — analyse each visually for all creative criteria.]"
+        else:
+            creative_note = "[Static image creative attached — analyse visually for all creative criteria.]"
     elif is_video:
         creative_note = "[Video creative uploaded — this is a video ad. Score video-specific items (video_hook, sound_off, pacing). A thumbnail/frame is attached if provided.]"
     else:
@@ -267,17 +270,17 @@ Return ONLY this JSON:
   "one_line_verdict": "One honest sentence summary."
 }}"""
 
-def run_audit(api_key, account_type, platform, audit_mode, ad_copy, image, canva_url, is_video, brand=None):
+def run_audit(api_key, account_type, platform, audit_mode, ad_copy, images, canva_url, is_video, brand=None):
     client = anthropic.Anthropic(api_key=api_key)
-    has_image = image is not None
+    images = images or []
     system = build_system_prompt(account_type, platform, audit_mode, brand)
-    user_text = build_user_message(ad_copy, audit_mode, canva_url, has_image, is_video)
+    user_text = build_user_message(ad_copy, audit_mode, canva_url, len(images), is_video)
 
     content = []
-    if has_image:
+    for img in images:
         content.append({
             "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_to_base64(image)}
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_to_base64(img)}
         })
     content.append({"type": "text", "text": user_text})
 
@@ -525,11 +528,30 @@ def page_audit(api_key):
                             return col
                     return None
 
+                def _find_merged_siblings(df_cols, anchor_col):
+                    """Return Unnamed: N columns immediately following anchor_col (merged cell children)."""
+                    if anchor_col is None:
+                        return []
+                    try:
+                        idx = df_cols.index(anchor_col)
+                    except ValueError:
+                        return []
+                    siblings = []
+                    for c in df_cols[idx + 1:]:
+                        if re.match(r'^Unnamed: \d+$', c):
+                            siblings.append(c)
+                        else:
+                            break
+                    return siblings
+
                 real_cols = list(df.columns)
                 auto_pt   = _find_col(real_cols, ["primary text", "primary", "ad copy", "body"])
                 auto_hl   = _find_col(real_cols, ["headline", "heading", "title"])
                 auto_desc = _find_col(real_cols, ["description", "desc"])
                 auto_url  = _find_col(real_cols, ["url", "link", "destination"])
+
+                # Detect columns under a merged "Primary Ad Text / Ad Copy" header
+                pt_siblings = _find_merged_siblings(real_cols, auto_pt)
 
                 NONE_OPT = "— not in sheet —"
                 cols_opts = [NONE_OPT] + real_cols
@@ -541,6 +563,8 @@ def page_audit(api_key):
                     cm1, cm2, cm3, cm4 = st.columns(4)
                     with cm1:
                         pt_col   = st.selectbox("Primary Text",  cols_opts, index=_idx(auto_pt),  key="pt_col")
+                        if pt_siblings:
+                            st.caption(f"Merged header detected — also reading: {', '.join(pt_siblings)}")
                     with cm2:
                         hl_col   = st.selectbox("Headlines",     cols_opts, index=_idx(auto_hl),  key="hl_col")
                     with cm3:
@@ -550,12 +574,21 @@ def page_audit(api_key):
 
                 # ── Parse all rows, skip empty + checklist-only rows ──────
                 def _parse_row(row):
-                    pt  = str(row[pt_col])   if pt_col   != NONE_OPT else ""
+                    # Combine primary text column + any merged-cell sibling columns
+                    if pt_col != NONE_OPT:
+                        pt_parts = []
+                        for c in [pt_col] + _find_merged_siblings(real_cols, pt_col):
+                            val = str(row[c])
+                            if val not in ("", "nan", "NaN"):
+                                pt_parts.append(val)
+                        pt = "\n".join(pt_parts)
+                    else:
+                        pt = ""
                     hl  = str(row[hl_col])   if hl_col   != NONE_OPT else ""
                     dc  = str(row[desc_col]) if desc_col != NONE_OPT else ""
                     url = str(row[url_col])  if url_col  != NONE_OPT else ""
                     return {
-                        "primary_text": pt  if pt  not in ("", "nan", "NaN") else "",
+                        "primary_text": pt,
                         "headlines":    parse_headlines(hl),
                         "descriptions": parse_headlines(dc),
                         "final_url":    url if url not in ("", "nan", "NaN") else "",
@@ -622,8 +655,13 @@ def page_audit(api_key):
     canva_url = st.text_input("Canva Share Link (paste link → auto-screenshot)",
                               placeholder="https://www.canva.com/design/...")
 
-    creative_image = None
+    # Session state for accumulated pasted images
+    if "pasted_images" not in st.session_state:
+        st.session_state["pasted_images"] = []
+
     is_video       = False
+    uploaded_images = []
+    video_thumbnail = None
 
     # Auto-screenshot from Canva link via Microlink
     if canva_url:
@@ -640,14 +678,11 @@ def page_audit(api_key):
                 st.session_state["canva_fetched_url"] = canva_url
                 st.warning(f"⚠️ Auto-capture failed ({err}) — upload manually below.")
 
-        if st.session_state.get("canva_img"):
-            creative_image = st.session_state["canva_img"]
-
     st.markdown("**Or upload / paste manually** (use if Canva auto-capture fails):")
     tab_paste, tab_img, tab_vid = st.tabs(["📋 Paste from Clipboard", "🖼️ Static Image", "🎬 Video"])
 
     with tab_paste:
-        st.caption("Copy an image anywhere (screenshot, browser, Canva), then click the button below and it will appear instantly.")
+        st.caption("Copy an image anywhere (screenshot, browser, Canva), then click the button. Each paste adds to your collection.")
         paste_result = pbutton(
             label="📋 Paste Image",
             text_color="#ffffff",
@@ -656,17 +691,22 @@ def page_audit(api_key):
             key="paste_btn",
         )
         if paste_result.image_data is not None:
-            creative_image = paste_result.image_data
+            st.session_state["pasted_images"].append(paste_result.image_data)
             is_video = False
-            st.success("✅ Image pasted from clipboard")
+            st.success(f"✅ Image pasted — {len(st.session_state['pasted_images'])} pasted total")
+        if st.session_state["pasted_images"]:
+            if st.button("🗑️ Clear pasted images", key="clear_pasted"):
+                st.session_state["pasted_images"] = []
+                st.rerun()
 
     with tab_img:
-        uploaded_img = st.file_uploader("Upload image (PNG, JPG, WebP)", type=["png", "jpg", "jpeg", "webp"],
-                                        key="img_upload", label_visibility="collapsed")
-        if uploaded_img:
-            creative_image = Image.open(uploaded_img)
+        uploaded_files = st.file_uploader("Upload images (PNG, JPG, WebP)", type=["png", "jpg", "jpeg", "webp"],
+                                          key="img_upload", label_visibility="collapsed",
+                                          accept_multiple_files=True)
+        if uploaded_files:
+            uploaded_images = [Image.open(f) for f in uploaded_files]
             is_video = False
-            st.success("✅ Image uploaded")
+            st.success(f"✅ {len(uploaded_images)} image(s) uploaded")
 
     with tab_vid:
         st.caption("Upload a screenshot or thumbnail of the first frame/hook of your video — Claude will score all video-specific criteria.")
@@ -674,12 +714,25 @@ def page_audit(api_key):
                                         key="vid_upload",
                                         label_visibility="collapsed")
         if uploaded_vid:
-            creative_image = Image.open(uploaded_vid)
+            video_thumbnail = Image.open(uploaded_vid)
             is_video = True
             st.success("✅ Video thumbnail uploaded — video audit mode active")
 
-    if creative_image:
-        st.image(creative_image, caption="Creative Preview", use_container_width=True)
+    # Combine all images from every source
+    all_creative_images = []
+    if st.session_state.get("canva_img"):
+        all_creative_images.append(st.session_state["canva_img"])
+    all_creative_images.extend(st.session_state.get("pasted_images", []))
+    all_creative_images.extend(uploaded_images)
+    if video_thumbnail:
+        all_creative_images.append(video_thumbnail)
+
+    if all_creative_images:
+        n_cols = min(len(all_creative_images), 4)
+        preview_cols = st.columns(n_cols)
+        for i, img in enumerate(all_creative_images):
+            with preview_cols[i % n_cols]:
+                st.image(img, caption=f"Image {i + 1}", width=200)
 
     st.markdown("---")
 
@@ -689,7 +742,7 @@ def page_audit(api_key):
     if audit_mode_key == "creative":
         ads_to_audit = [{"primary_text": "", "headlines": [], "descriptions": [], "final_url": ""}]
 
-    can_audit = bool(creative_image or canva_url)
+    can_audit = bool(all_creative_images or canva_url)
     if not can_audit:
         st.info("Paste a Canva link or upload a creative to run the audit.")
     elif audit_mode_key == "full" and not ads_to_audit:
@@ -706,7 +759,7 @@ def page_audit(api_key):
                 try:
                     res = run_audit(
                         api_key, account_type, platform, audit_mode_key,
-                        ac, creative_image, canva_url or "", is_video, selected_brand
+                        ac, all_creative_images, canva_url or "", is_video, selected_brand
                     )
                     all_results.append({"ad_copy": ac, "results": res})
                 except anthropic.AuthenticationError:
