@@ -552,6 +552,8 @@ def page_audit(api_key):
 
                 # Detect columns under a merged "Primary Ad Text / Ad Copy" header
                 pt_siblings = _find_merged_siblings(real_cols, auto_pt)
+                # Default primary text columns = anchor + any merged siblings
+                _pt_default = [c for c in ([auto_pt] + pt_siblings) if c in real_cols]
 
                 NONE_OPT = "— not in sheet —"
                 cols_opts = [NONE_OPT] + real_cols
@@ -560,11 +562,16 @@ def page_audit(api_key):
                     return cols_opts.index(auto) if auto and auto in cols_opts else 0
 
                 with st.expander("⚙️ Column mapping (auto-detected — expand to adjust)", expanded=False):
-                    cm1, cm2, cm3, cm4 = st.columns(4)
-                    with cm1:
-                        pt_col   = st.selectbox("Primary Text",  cols_opts, index=_idx(auto_pt),  key="pt_col")
-                        if pt_siblings:
-                            st.caption(f"Merged header detected — also reading: {', '.join(pt_siblings)}")
+                    # Primary Text uses multiselect so merged siblings appear immediately
+                    pt_cols = st.multiselect(
+                        "Primary Text column(s) — select all columns under a merged header",
+                        real_cols,
+                        default=_pt_default,
+                        key="pt_cols",
+                    )
+                    if pt_siblings:
+                        st.caption(f"Merged header detected — sibling columns auto-added above. Add or remove as needed.")
+                    cm2, cm3, cm4 = st.columns(3)
                     with cm2:
                         hl_col   = st.selectbox("Headlines",     cols_opts, index=_idx(auto_hl),  key="hl_col")
                     with cm3:
@@ -574,13 +581,9 @@ def page_audit(api_key):
 
                 # ── Parse all rows, skip empty + checklist-only rows ──────
                 def _parse_row(row):
-                    # Combine primary text column + any merged-cell sibling columns
-                    if pt_col != NONE_OPT:
-                        pt_parts = []
-                        for c in [pt_col] + _find_merged_siblings(real_cols, pt_col):
-                            val = str(row[c])
-                            if val not in ("", "nan", "NaN"):
-                                pt_parts.append(val)
+                    if pt_cols:
+                        pt_parts = [str(row[c]) for c in pt_cols
+                                    if str(row[c]) not in ("", "nan", "NaN")]
                         pt = "\n".join(pt_parts)
                     else:
                         pt = ""
@@ -600,8 +603,32 @@ def page_audit(api_key):
                         ac["descriptions"] or ac["final_url"]
                     )
 
+                # Build a set of known checklist strings to exclude from ad choices
+                _checklist_strings = set()
+                for _ci in FULL_CHECKLIST:
+                    _checklist_strings.add(_ci["section"].lower().strip())
+                    _checklist_strings.add(_ci["label"].lower().strip())
+                    _checklist_strings.add(_ci["id"].lower().strip())
+                    _checklist_strings.add(_ci["desc"].lower().strip())
+
+                def _is_checklist_row(ac):
+                    pt = ac["primary_text"].strip()
+                    if not pt:
+                        return False
+                    pt_lower = pt.lower()
+                    # Exact match against known checklist labels / IDs / sections
+                    if pt_lower in _checklist_strings:
+                        return True
+                    # Looks like a numbered section header e.g. "1. Hook Strength"
+                    if re.match(r'^\d+[a-z]?\.\s+', pt):
+                        return True
+                    # Very short text with no other fields — likely a row label/divider
+                    if len(pt) < 30 and not ac["headlines"] and not ac["descriptions"] and not ac["final_url"]:
+                        return True
+                    return False
+
                 all_ads = [_parse_row(df.iloc[i]) for i in range(len(df))]
-                all_ads = [ac for ac in all_ads if _has_content(ac)]
+                all_ads = [ac for ac in all_ads if _has_content(ac) and not _is_checklist_row(ac)]
 
                 if not all_ads:
                     st.warning("No ad rows found after filtering. Check that your column mapping is correct.")
