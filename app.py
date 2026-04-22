@@ -606,44 +606,91 @@ def page_audit(api_key):
                 if not all_ads:
                     st.warning("No ad rows found after filtering. Check that your column mapping is correct.")
                 else:
-                    st.markdown(f"**{len(all_ads)} ad(s) found — tick the ones you want to audit:**")
+                    n_ads = len(all_ads)
+
+                    # ── Select All / Clear All controls ───────────────────
+                    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 4])
+                    with ctrl1:
+                        if st.button("✅ Select All", key="sel_all", use_container_width=True):
+                            for j in range(n_ads):
+                                st.session_state[f"chk_{j}"] = True
+                            st.rerun()
+                    with ctrl2:
+                        if st.button("☐ Clear All", key="clr_all", use_container_width=True):
+                            for j in range(n_ads):
+                                st.session_state[f"chk_{j}"] = False
+                            st.rerun()
+                    with ctrl3:
+                        n_selected = sum(1 for j in range(n_ads) if st.session_state.get(f"chk_{j}", False))
+                        if n_selected:
+                            st.markdown(f"<div style='padding-top:6px;color:#22c55e;font-weight:700'>"
+                                        f"✅ {n_selected} of {n_ads} selected</div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"<div style='padding-top:6px;color:#94a3b8'>"
+                                        f"{n_ads} ad(s) found — select the ones to audit</div>", unsafe_allow_html=True)
+
                     st.markdown("<br>", unsafe_allow_html=True)
 
+                    # ── Card grid (2 columns) ─────────────────────────────
                     selected_ads = []
-                    for i, ac in enumerate(all_ads):
-                        preview_label = (
-                            ac["primary_text"][:60]
-                            or (ac["headlines"][0][:60] if ac["headlines"] else "")
-                            or f"Ad {i+1}"
-                        )
-                        col_chk, col_exp = st.columns([0.05, 0.95])
-                        with col_chk:
-                            checked = st.checkbox("", key=f"chk_{i}", value=False)
-                        with col_exp:
-                            with st.expander(f"📄 Ad {i+1} — {preview_label}{'…' if len(preview_label)==60 else ''}", expanded=False):
-                                st.markdown('<div class="copy-preview">', unsafe_allow_html=True)
-                                if ac["primary_text"]:
-                                    st.markdown('<div class="copy-label">Primary Text</div>', unsafe_allow_html=True)
-                                    st.markdown(f'<div class="copy-value">{ac["primary_text"]}</div>', unsafe_allow_html=True)
-                                if ac["headlines"]:
-                                    st.markdown('<div class="copy-label" style="margin-top:12px">Headlines</div>', unsafe_allow_html=True)
-                                    for h in ac["headlines"]:
-                                        st.markdown(f'<div class="headline-item">📌 {h}</div>', unsafe_allow_html=True)
-                                if ac["descriptions"]:
-                                    st.markdown('<div class="copy-label" style="margin-top:12px">Descriptions</div>', unsafe_allow_html=True)
-                                    for d in ac["descriptions"]:
-                                        st.markdown(f'<div class="headline-item">📝 {d}</div>', unsafe_allow_html=True)
-                                if ac["final_url"]:
-                                    st.markdown(f'<div class="copy-label" style="margin-top:12px">Final URL</div>', unsafe_allow_html=True)
-                                    st.markdown(f'<div class="copy-value">🔗 {ac["final_url"]}</div>', unsafe_allow_html=True)
-                                st.markdown('</div>', unsafe_allow_html=True)
+                    for row_start in range(0, n_ads, 2):
+                        card_cols = st.columns(2)
+                        for col_idx in range(2):
+                            i = row_start + col_idx
+                            if i >= n_ads:
+                                break
+                            ac = all_ads[i]
+                            is_checked = st.session_state.get(f"chk_{i}", False)
+                            border = "#22c55e" if is_checked else "#e2e8f0"
+                            bg     = "#f0fdf4" if is_checked else "#f8fafc"
+                            badge_bg = "#22c55e" if is_checked else "#e2e8f0"
+                            badge_col = "#fff" if is_checked else "#64748b"
 
-                        if checked:
-                            selected_ads.append(ac)
+                            pt_preview = ac["primary_text"][:130]
+                            if len(ac["primary_text"]) > 130:
+                                pt_preview += "…"
+                            hl_preview = ""
+                            if ac["headlines"]:
+                                hl_preview = " · ".join(ac["headlines"][:2])
+                                if len(ac["headlines"]) > 2:
+                                    hl_preview += f" +{len(ac['headlines'])-2} more"
+
+                            meta_parts = []
+                            if ac["headlines"]:
+                                meta_parts.append(f"{len(ac['headlines'])} headline{'s' if len(ac['headlines'])>1 else ''}")
+                            if ac["descriptions"]:
+                                meta_parts.append(f"{len(ac['descriptions'])} desc")
+                            if ac["final_url"]:
+                                meta_parts.append("has URL")
+                            meta = " · ".join(meta_parts)
+
+                            with card_cols[col_idx]:
+                                st.markdown(f"""
+                                <div style="border:2px solid {border};border-radius:12px;
+                                            padding:14px 16px;background:{bg};margin-bottom:2px;
+                                            min-height:140px">
+                                  <div style="display:flex;justify-content:space-between;
+                                              align-items:center;margin-bottom:8px">
+                                    <span style="font-weight:700;color:#1e293b;font-size:.95em">Ad {i+1}</span>
+                                    <span style="background:{badge_bg};color:{badge_col};
+                                                 font-size:.7em;font-weight:700;padding:2px 8px;
+                                                 border-radius:20px">
+                                      {'SELECTED' if is_checked else 'click to select'}
+                                    </span>
+                                  </div>
+                                  <div style="color:#334155;font-size:.88em;line-height:1.55;margin-bottom:8px">
+                                    {pt_preview or '<span style="color:#94a3b8;font-style:italic">(no primary text)</span>'}
+                                  </div>
+                                  {f'<div style="color:#64748b;font-size:.8em;line-height:1.4;margin-bottom:6px;font-style:italic">{hl_preview}</div>' if hl_preview else ''}
+                                  <div style="color:#94a3b8;font-size:.75em">{meta}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                checked = st.checkbox("Select for audit", key=f"chk_{i}",
+                                                      label_visibility="collapsed")
+                                if checked:
+                                    selected_ads.append(ac)
 
                     st.session_state["selected_ads"] = selected_ads
-                    if selected_ads:
-                        st.info(f"✅ {len(selected_ads)} ad(s) selected for audit.")
     else:
         st.info("ℹ️ Creative-Only mode — no ad copy needed. Just upload your creative below.")
 
@@ -658,6 +705,8 @@ def page_audit(api_key):
     # Session state for accumulated pasted images
     if "pasted_images" not in st.session_state:
         st.session_state["pasted_images"] = []
+    if "pasted_image_hashes" not in st.session_state:
+        st.session_state["pasted_image_hashes"] = []
 
     is_video       = False
     uploaded_images = []
@@ -691,12 +740,19 @@ def page_audit(api_key):
             key="paste_btn",
         )
         if paste_result.image_data is not None:
-            st.session_state["pasted_images"].append(paste_result.image_data)
-            is_video = False
-            st.success(f"✅ Image pasted — {len(st.session_state['pasted_images'])} pasted total")
+            import hashlib as _hl
+            _buf = BytesIO()
+            paste_result.image_data.save(_buf, format="PNG")
+            _hash = _hl.md5(_buf.getvalue()).hexdigest()
+            if _hash not in st.session_state["pasted_image_hashes"]:
+                st.session_state["pasted_image_hashes"].append(_hash)
+                st.session_state["pasted_images"].append(paste_result.image_data)
+                is_video = False
+                st.success(f"✅ Image pasted — {len(st.session_state['pasted_images'])} in collection")
         if st.session_state["pasted_images"]:
             if st.button("🗑️ Clear pasted images", key="clear_pasted"):
                 st.session_state["pasted_images"] = []
+                st.session_state["pasted_image_hashes"] = []
                 st.rerun()
 
     with tab_img:
