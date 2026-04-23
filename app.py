@@ -574,17 +574,29 @@ def page_audit(api_key):
                 # Each cell's first non-empty line is treated as a label (e.g. "Long form Ad Copy - FlexDemi Bra")
                 # and the remaining lines are the actual ad copy body.
                 def _parse_pt_cell(raw):
-                    """Return (label, body) by splitting on first blank/short label line."""
+                    """Return (label, body). Body is always the full cell content."""
                     lines = [l.strip() for l in str(raw).split('\n') if l.strip()]
                     if not lines:
                         return None, None
-                    # First line is a label if: short (<90 chars) and doesn't end with a sentence period
+                    full_text = "\n".join(lines)
                     first = lines[0]
-                    if len(lines) > 1 and len(first) < 90 and not re.search(r'\.\s*$', first):
-                        return first, "\n".join(lines[1:])
-                    # Otherwise use the whole thing as body, truncate for label
-                    label = (first[:70] + "…") if len(first) > 70 else first
-                    return label, "\n".join(lines)
+                    # Only treat first line as a standalone label if it looks like a
+                    # variant/column name: very short, no sentence punctuation, doesn't
+                    # start with words typical of ad body copy.
+                    _body_start = bool(re.match(
+                        r'^(meet|ever|sick|tired|why|still|have you|do you|are you|'
+                        r'what if|introducing|discover|imagine|stop|start|get |feel|'
+                        r'look|want|need|struggling|if you|the |your )',
+                        first.lower()
+                    ))
+                    _is_label = (
+                        len(lines) > 1
+                        and len(first) <= 55
+                        and not re.search(r'[.?!,]\s*$', first)
+                        and not _body_start
+                    )
+                    label = first if _is_label else ((first[:72] + "…") if len(first) > 72 else first)
+                    return label, full_text  # always full text as body
 
                 all_ads = []
                 for _ri in range(len(df)):
@@ -634,38 +646,45 @@ def page_audit(api_key):
                 else:
                     st.markdown(f"**{len(all_ads)} ad cop{'ies' if len(all_ads)>1 else 'y'} found** — select the ones to include in the audit:")
 
-                    # ── Selector table ────────────────────────────────────
-                    _rows = []
-                    for i, ac in enumerate(all_ads):
-                        _hl_str = " | ".join(ac["headlines"][:2])
-                        if len(ac["headlines"]) > 2:
-                            _hl_str += f" +{len(ac['headlines'])-2} more"
-                        _rows.append({
-                            "Select":    False,
-                            "#":         i + 1,
-                            "Ad Copy":   ac["label"],
-                            "Preview":   ac["primary_text"][:140] + ("…" if len(ac["primary_text"]) > 140 else ""),
-                            "Headlines": _hl_str,
-                        })
-                    _display_df = pd.DataFrame(_rows)
+                    # Reset checkbox state whenever the sheet URL changes
+                    _sel_cache_key = f"_adsel_{sheet_url}"
+                    if st.session_state.get("_adsel_cache") != _sel_cache_key:
+                        for _k in list(st.session_state.keys()):
+                            if _k.startswith("ad_chk_"):
+                                del st.session_state[_k]
+                        st.session_state["_adsel_cache"] = _sel_cache_key
 
-                    _edited = st.data_editor(
-                        _display_df,
-                        column_config={
-                            "Select":    st.column_config.CheckboxColumn("✓", width="small"),
-                            "#":         st.column_config.NumberColumn("#", width="small"),
-                            "Ad Copy":   st.column_config.TextColumn("Ad Copy", width="medium"),
-                            "Preview":   st.column_config.TextColumn("Copy Preview", width="large"),
-                            "Headlines": st.column_config.TextColumn("Headlines", width="medium"),
-                        },
-                        disabled=["#", "Ad Copy", "Preview", "Headlines"],
-                        hide_index=True,
-                        use_container_width=True,
-                        height=min(520, 46 * len(all_ads) + 58),
-                        key="ad_selector_editor",
-                    )
+                    # Select All / Deselect All
+                    _sb1, _sb2, _ = st.columns([2, 2, 8])
+                    with _sb1:
+                        if st.button("✅ Select All", key="btn_sel_all"):
+                            for _i in range(len(all_ads)):
+                                st.session_state[f"ad_chk_{_i}"] = True
+                            st.rerun()
+                    with _sb2:
+                        if st.button("☐ Deselect All", key="btn_desel_all"):
+                            for _i in range(len(all_ads)):
+                                st.session_state[f"ad_chk_{_i}"] = False
+                            st.rerun()
 
-                    selected_ads = [all_ads[i] for i, row in _edited.iterrows() if row["Select"]]
+                    # Expand/collapse rows with checkboxes
+                    for _i, _ac in enumerate(all_ads):
+                        _hl_str = " | ".join(_ac["headlines"][:3]) if _ac["headlines"] else ""
+                        _chk_col, _exp_col = st.columns([1, 11])
+                        with _chk_col:
+                            st.checkbox("", key=f"ad_chk_{_i}")
+                        with _exp_col:
+                            with st.expander(f"{_i + 1}. {_ac['label']}", expanded=False):
+                                st.text(_ac["primary_text"])
+                                if _hl_str:
+                                    st.markdown(f"**Headlines:** {_hl_str}")
+                                if _ac.get("final_url"):
+                                    st.caption(f"URL: {_ac['final_url']}")
+
+                    selected_ads = [
+                        all_ads[_i] for _i in range(len(all_ads))
+                        if st.session_state.get(f"ad_chk_{_i}", False)
+                    ]
                     if selected_ads:
                         st.success(f"✅ {len(selected_ads)} ad cop{'ies' if len(selected_ads)>1 else 'y'} selected")
 
