@@ -533,156 +533,141 @@ def page_audit(api_key):
                 if _cutoff < len(df):
                     df = df.iloc[:_cutoff].reset_index(drop=True)
 
-                # ── Column analysis helpers ───────────────────────────────
-                def _find_merged_siblings(df_cols, anchor_col):
-                    if anchor_col is None:
-                        return []
-                    try:
-                        idx = df_cols.index(anchor_col)
-                    except ValueError:
-                        return []
-                    siblings = []
-                    for c in df_cols[idx + 1:]:
-                        if re.match(r'^Unnamed: \d+$', c):
-                            siblings.append(c)
-                        else:
-                            break
-                    return siblings
+                # ── Silent auto-detection — no column selector shown to user ──
+                real_cols = list(df.columns)
 
-                def _col_avg_len(col):
-                    vals = [str(v).strip() for v in df[col] if str(v).strip() not in ("", "nan", "NaN")]
-                    return sum(len(v) for v in vals) / len(vals) if vals else 0
-
-                def _col_sample(col):
-                    for v in df[col]:
-                        s = str(v).strip()
-                        if s and s not in ("nan", "NaN"):
-                            return (s[:65] + "…") if len(s) > 65 else s
-                    return ""
-
-                def _find_col_keyword(df_cols, keywords):
-                    for col in df_cols:
+                def _kw_col(keywords):
+                    for col in real_cols:
                         if any(kw in col.lower() for kw in keywords):
                             return col
                     return None
 
-                def _find_primary_text_col(df_cols):
-                    """Find the best primary-text column by content length, not just header name.
-                    Among keyword-matched columns + their merged siblings, prefer the one
-                    with the longest average content (actual copy, not labels)."""
-                    anchor = _find_col_keyword(df_cols, ["primary text", "primary", "ad copy", "body"])
-                    candidates = ([anchor] + _find_merged_siblings(df_cols, anchor)) if anchor else df_cols[:]
-                    scored = [(c, _col_avg_len(c)) for c in candidates if _col_avg_len(c) > 0]
-                    return max(scored, key=lambda x: x[1])[0] if scored else anchor
+                def _merged_siblings(anchor):
+                    if not anchor:
+                        return []
+                    try:
+                        idx = real_cols.index(anchor)
+                    except ValueError:
+                        return []
+                    out = []
+                    for c in real_cols[idx + 1:]:
+                        if re.match(r'^Unnamed: \d+$', c):
+                            out.append(c)
+                        else:
+                            break
+                    return out
 
-                real_cols = list(df.columns)
-                auto_pt   = _find_primary_text_col(real_cols)
-                auto_hl   = _find_col_keyword(real_cols, ["headline", "heading", "title"])
-                auto_desc = _find_col_keyword(real_cols, ["description", "desc"])
-                auto_url  = _find_col_keyword(real_cols, ["url", "link", "destination"])
+                # Primary text: anchor column + all merged siblings under it
+                _pt_anchor  = _kw_col(["primary", "ad copy", "body text"])
+                _pt_cols    = ([_pt_anchor] + _merged_siblings(_pt_anchor)) if _pt_anchor else []
+                # Fallback: if no keyword match, use the column with longest average content
+                if not _pt_cols:
+                    def _avg_len(c):
+                        vals = [str(v) for v in df[c] if str(v).strip() not in ("", "nan", "NaN")]
+                        return sum(len(v) for v in vals) / len(vals) if vals else 0
+                    _pt_cols = [max(real_cols, key=_avg_len)] if real_cols else []
 
-                NONE_OPT  = "— not in sheet —"
-                cols_opts = [NONE_OPT] + real_cols
+                _hl_col  = _kw_col(["headline", "heading"])
+                _url_col = _kw_col(["url", "link", "destination", "final url"])
 
-                def _idx(col):
-                    return cols_opts.index(col) if col and col in cols_opts else 0
+                # ── Build one entry per (row × pt_column) ─────────────────
+                # Each cell's first non-empty line is treated as a label (e.g. "Long form Ad Copy - FlexDemi Bra")
+                # and the remaining lines are the actual ad copy body.
+                def _parse_pt_cell(raw):
+                    """Return (label, body) by splitting on first blank/short label line."""
+                    lines = [l.strip() for l in str(raw).split('\n') if l.strip()]
+                    if not lines:
+                        return None, None
+                    # First line is a label if: short (<90 chars) and doesn't end with a sentence period
+                    first = lines[0]
+                    if len(lines) > 1 and len(first) < 90 and not re.search(r'\.\s*$', first):
+                        return first, "\n".join(lines[1:])
+                    # Otherwise use the whole thing as body, truncate for label
+                    label = (first[:70] + "…") if len(first) > 70 else first
+                    return label, "\n".join(lines)
 
-                def _fmt_col(col):
-                    if col == NONE_OPT:
-                        return NONE_OPT
-                    sample = _col_sample(col)
-                    return f'{col}  →  "{sample}"' if sample else col
+                all_ads = []
+                for _ri in range(len(df)):
+                    _row  = df.iloc[_ri]
+                    _hl   = str(_row[_hl_col])  if _hl_col  and _hl_col  in real_cols else ""
+                    _url  = str(_row[_url_col]) if _url_col and _url_col in real_cols else ""
+                    _url  = _url if _url not in ("", "nan", "NaN") else ""
+                    _hls  = parse_headlines(_hl)
 
-                with st.expander("⚙️ Column mapping (auto-detected — expand to adjust)", expanded=False):
-                    _ca, _cb = st.columns(2)
-                    with _ca:
-                        pt_col   = st.selectbox("Primary Text", cols_opts, index=_idx(auto_pt),
-                                                key="pt_col",   format_func=_fmt_col)
-                    with _cb:
-                        hl_col   = st.selectbox("Headlines",    cols_opts, index=_idx(auto_hl),
-                                                key="hl_col",   format_func=_fmt_col)
-                    _cc, _cd = st.columns(2)
-                    with _cc:
-                        desc_col = st.selectbox("Descriptions", cols_opts, index=_idx(auto_desc),
-                                                key="desc_col", format_func=_fmt_col)
-                    with _cd:
-                        url_col  = st.selectbox("Final URL",    cols_opts, index=_idx(auto_url),
-                                                key="url_col",  format_func=_fmt_col)
+                    for _pc in _pt_cols:
+                        _raw = str(_row[_pc]).strip()
+                        if _raw in ("", "nan", "NaN"):
+                            continue
+                        _label, _body = _parse_pt_cell(_raw)
+                        if not _body or not _body.strip():
+                            continue
+                        all_ads.append({
+                            "label":        _label or _body[:60],
+                            "primary_text": _body,
+                            "headlines":    _hls,
+                            "descriptions": [],
+                            "final_url":    _url,
+                        })
 
-                def _parse_row(row):
-                    pt  = str(row[pt_col])   if pt_col   != NONE_OPT else ""
-                    hl  = str(row[hl_col])   if hl_col   != NONE_OPT else ""
-                    dc  = str(row[desc_col]) if desc_col != NONE_OPT else ""
-                    url = str(row[url_col])  if url_col  != NONE_OPT else ""
-                    return {
-                        "primary_text": pt  if pt  not in ("", "nan", "NaN") else "",
-                        "headlines":    parse_headlines(hl),
-                        "descriptions": parse_headlines(dc),
-                        "final_url":    url if url not in ("", "nan", "NaN") else "",
-                    }
-
-                def _has_content(ac):
-                    return bool(ac["primary_text"] or ac["headlines"] or ac["descriptions"] or ac["final_url"])
-
-                _checklist_strings = set()
+                # Filter out entries that look like checklist / header rows
+                _ck_strings = set()
                 for _ci in FULL_CHECKLIST:
-                    _checklist_strings.update({
+                    _ck_strings.update({
                         _ci["section"].lower().strip(), _ci["label"].lower().strip(),
-                        _ci["id"].lower().strip(),      _ci["desc"].lower().strip(),
+                        _ci["id"].lower().strip(),
                     })
 
-                def _is_checklist_row(ac):
-                    pt = ac["primary_text"].strip()
-                    if not pt:
-                        return False
-                    if pt.lower() in _checklist_strings:
+                def _is_junk(ac):
+                    pt = ac["primary_text"].strip().lower()
+                    if pt in _ck_strings:
                         return True
                     if re.match(r'^\d+[a-z]?\.\s+', pt):
                         return True
-                    if len(pt) < 30 and not ac["headlines"] and not ac["descriptions"] and not ac["final_url"]:
+                    if len(pt) < 25 and not ac["headlines"] and not ac["final_url"]:
                         return True
                     return False
 
-                all_ads = [_parse_row(df.iloc[i]) for i in range(len(df))]
-                all_ads = [ac for ac in all_ads if _has_content(ac) and not _is_checklist_row(ac)]
+                all_ads = [ac for ac in all_ads if not _is_junk(ac)]
 
                 if not all_ads:
-                    st.warning("No ad rows found. Check column mapping above.")
+                    st.warning("No ad copy found in this sheet. Make sure the sheet is public and has a 'Primary Ad Text' column.")
                 else:
-                    st.markdown(f"**{len(all_ads)} ad row(s) found** — check the box next to each one you want to audit:")
+                    st.markdown(f"**{len(all_ads)} ad cop{'ies' if len(all_ads)>1 else 'y'} found** — select the ones to include in the audit:")
 
-                    # ── Full-preview data table with Select checkboxes ────
+                    # ── Selector table ────────────────────────────────────
                     _rows = []
                     for i, ac in enumerate(all_ads):
-                        hl_str = " | ".join(ac["headlines"][:3])
-                        if len(ac["headlines"]) > 3:
-                            hl_str += f" +{len(ac['headlines'])-3} more"
+                        _hl_str = " | ".join(ac["headlines"][:2])
+                        if len(ac["headlines"]) > 2:
+                            _hl_str += f" +{len(ac['headlines'])-2} more"
                         _rows.append({
-                            "Select":       False,
-                            "#":            i + 1,
-                            "Primary Text": ac["primary_text"],
-                            "Headlines":    hl_str,
+                            "Select":    False,
+                            "#":         i + 1,
+                            "Ad Copy":   ac["label"],
+                            "Preview":   ac["primary_text"][:140] + ("…" if len(ac["primary_text"]) > 140 else ""),
+                            "Headlines": _hl_str,
                         })
                     _display_df = pd.DataFrame(_rows)
 
                     _edited = st.data_editor(
                         _display_df,
                         column_config={
-                            "Select":       st.column_config.CheckboxColumn("✓", width="small"),
-                            "#":            st.column_config.NumberColumn("#", width="small"),
-                            "Primary Text": st.column_config.TextColumn("Primary Text", width="large"),
-                            "Headlines":    st.column_config.TextColumn("Headlines",    width="medium"),
+                            "Select":    st.column_config.CheckboxColumn("✓", width="small"),
+                            "#":         st.column_config.NumberColumn("#", width="small"),
+                            "Ad Copy":   st.column_config.TextColumn("Ad Copy", width="medium"),
+                            "Preview":   st.column_config.TextColumn("Copy Preview", width="large"),
+                            "Headlines": st.column_config.TextColumn("Headlines", width="medium"),
                         },
-                        disabled=["#", "Primary Text", "Headlines"],
+                        disabled=["#", "Ad Copy", "Preview", "Headlines"],
                         hide_index=True,
                         use_container_width=True,
-                        height=min(500, 45 * len(all_ads) + 55),
+                        height=min(520, 46 * len(all_ads) + 58),
                         key="ad_selector_editor",
                     )
 
                     selected_ads = [all_ads[i] for i, row in _edited.iterrows() if row["Select"]]
                     if selected_ads:
-                        st.success(f"✅ {len(selected_ads)} ad(s) selected for audit")
+                        st.success(f"✅ {len(selected_ads)} ad cop{'ies' if len(selected_ads)>1 else 'y'} selected")
 
         st.session_state["selected_ads"] = selected_ads
 
