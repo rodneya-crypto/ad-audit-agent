@@ -683,6 +683,8 @@ def page_audit(api_key):
         st.session_state["pasted_images"] = []
     if "pasted_image_hashes" not in st.session_state:
         st.session_state["pasted_image_hashes"] = []
+    if "paste_counter" not in st.session_state:
+        st.session_state["paste_counter"] = 0
 
     uploaded_images = []
 
@@ -711,15 +713,15 @@ def page_audit(api_key):
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # ── Clipboard paste (outside any tab so it stays mounted) ─────────
+        # ── Clipboard paste ───────────────────────────────────────────────
         st.markdown("**Option B — Paste from Clipboard**")
-        st.caption("① Copy an image (Ctrl+C / Cmd+C)  →  ② Click the button below  →  ③ Paste (Ctrl+V / Cmd+V)")
+        st.caption("① Copy image (Ctrl+C / Cmd+C)  →  ② Click below  →  ③ Paste (Ctrl+V / Cmd+V)")
         paste_result = pbutton(
             label="📋 Paste Image",
             text_color="#ffffff",
             background_color="#1e293b",
             hover_background_color="#334155",
-            key="paste_btn",
+            key=f"paste_btn_{st.session_state['paste_counter']}",
         )
         if paste_result.image_data is not None:
             import hashlib as _hl
@@ -729,18 +731,11 @@ def page_audit(api_key):
             if _hash not in st.session_state["pasted_image_hashes"]:
                 st.session_state["pasted_image_hashes"].append(_hash)
                 st.session_state["pasted_images"].append(paste_result.image_data)
-                st.success(f"✅ Image added — {len(st.session_state['pasted_images'])} pasted so far")
-        if st.session_state["pasted_images"]:
-            _np = len(st.session_state["pasted_images"])
-            st.caption(f"{_np} pasted image{'s' if _np > 1 else ''} in collection")
-            if st.button("🗑️ Clear pasted images", key="clear_pasted"):
-                st.session_state["pasted_images"] = []
-                st.session_state["pasted_image_hashes"] = []
                 st.rerun()
 
     with right_col:
         # ── File upload ───────────────────────────────────────────────────
-        st.markdown("**Option B — Upload Image(s)**")
+        st.markdown("**Option C — Upload Image(s)**")
         uploaded_files = st.file_uploader(
             "upload_images",
             type=["png", "jpg", "jpeg", "webp"],
@@ -750,9 +745,8 @@ def page_audit(api_key):
         )
         if uploaded_files:
             uploaded_images = [Image.open(f) for f in uploaded_files]
-            st.success(f"✅ {len(uploaded_images)} image(s) ready")
 
-    # Combine all image sources
+    # ── Image collection grid ─────────────────────────────────────────────
     all_creative_images = []
     if st.session_state.get("canva_img"):
         all_creative_images.append(st.session_state["canva_img"])
@@ -760,12 +754,42 @@ def page_audit(api_key):
     all_creative_images.extend(uploaded_images)
 
     if all_creative_images:
-        st.markdown("**Creative Preview**")
-        n_prev = min(len(all_creative_images), 4)
-        prev_cols = st.columns(n_prev)
-        for i, img in enumerate(all_creative_images):
-            with prev_cols[i % n_prev]:
-                st.image(img, caption=f"Image {i + 1}", width=180)
+        st.markdown("**Creative Images**")
+
+        # Build a source tag list that mirrors all_creative_images order
+        _src_tags = []
+        if st.session_state.get("canva_img"):
+            _src_tags.append("canva")
+        for _pi in range(len(st.session_state.get("pasted_images", []))):
+            _src_tags.append(f"pasted_{_pi}")
+        for _ui in range(len(uploaded_images)):
+            _src_tags.append(f"uploaded_{_ui}")
+
+        _grid = st.columns(3)
+        for _i, (_tag, _img) in enumerate(zip(_src_tags, all_creative_images)):
+            with _grid[_i % 3]:
+                st.image(_img, use_container_width=True)
+                if _tag == "canva":
+                    if st.button("✕ Remove", key="del_canva"):
+                        st.session_state["canva_img"] = None
+                        st.session_state["canva_fetched_url"] = ""
+                        st.rerun()
+                elif _tag.startswith("pasted_"):
+                    _pidx = int(_tag.split("_")[1])
+                    if st.button(f"✕ Remove", key=f"del_pasted_{_i}"):
+                        st.session_state["pasted_images"].pop(_pidx)
+                        st.session_state["pasted_image_hashes"].pop(_pidx)
+                        st.session_state["paste_counter"] += 1
+                        st.rerun()
+                else:
+                    st.caption(f"Upload {int(_tag.split('_')[1]) + 1} — remove via uploader ↑")
+
+        if st.session_state.get("pasted_images"):
+            if st.button("🗑️ Clear all pasted images", key="clear_all_pasted"):
+                st.session_state["pasted_images"] = []
+                st.session_state["pasted_image_hashes"] = []
+                st.session_state["paste_counter"] += 1
+                st.rerun()
 
     st.markdown("---")
 
